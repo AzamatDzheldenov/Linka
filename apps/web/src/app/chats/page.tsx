@@ -4,11 +4,21 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { Chat, createPrivateChat, getChats } from "@/lib/api/chats";
 import { getMessages, Message } from "@/lib/api/messages";
 import { getSocket } from "@/lib/socket/client";
+import { ru } from "@/lib/i18n/ru";
 import { searchUsers } from "@/lib/api/users";
 import { AuthUser, useAuthStore } from "@/store/auth-store";
 
+const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
+const MIN_SIDEBAR_WIDTH = 72;
+const DEFAULT_SIDEBAR_WIDTH = 320;
+const MAX_SIDEBAR_WIDTH = 420;
+const COMPACT_SIDEBAR_WIDTH = 96;
+
 export default function ChatsPage() {
   const currentUser = useAuthStore((state) => state.currentUser);
+  const [isMobile, setIsMobile] = useState<boolean | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<AuthUser[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
@@ -22,12 +32,91 @@ export default function ChatsPage() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const sidebarWidthRef = useRef(sidebarWidth);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const isCompactSidebar = !isMobile && sidebarWidth <= COMPACT_SIDEBAR_WIDTH;
+
+  useEffect(() => {
+    sidebarWidthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 767px)");
+
+    function handleViewportChange() {
+      setIsMobile(mediaQuery.matches);
+    }
+
+    handleViewportChange();
+    mediaQuery.addEventListener("change", handleViewportChange);
+
+    return () => {
+      mediaQuery.removeEventListener("change", handleViewportChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const storedWidth = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY);
+    const parsedWidth = storedWidth ? Number(storedWidth) : NaN;
+
+    if (Number.isFinite(parsedWidth)) {
+      setSidebarWidth(clampSidebarWidth(parsedWidth));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isResizingSidebar) {
+      return;
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const sidebarLeft = sidebarRef.current?.getBoundingClientRect().left ?? 0;
+      const nextWidth = clampSidebarWidth(event.clientX - sidebarLeft);
+      sidebarWidthRef.current = nextWidth;
+      setSidebarWidth(nextWidth);
+    }
+
+    function handlePointerUp() {
+      setIsResizingSidebar(false);
+      window.localStorage.setItem(
+        SIDEBAR_WIDTH_STORAGE_KEY,
+        String(sidebarWidthRef.current),
+      );
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [isResizingSidebar]);
+
+  useEffect(() => {
+    if (!isResizingSidebar && isMobile === false) {
+      window.localStorage.setItem(
+        SIDEBAR_WIDTH_STORAGE_KEY,
+        String(sidebarWidth),
+      );
+    }
+  }, [isMobile, isResizingSidebar, sidebarWidth]);
 
   useEffect(() => {
     let isActive = true;
 
     async function loadChats() {
+      if (isMobile === null) {
+        return;
+      }
+
       setIsLoadingChats(true);
 
       try {
@@ -38,12 +127,14 @@ export default function ChatsPage() {
           setSelectedChat((current) =>
             current
               ? nextChats.find((chat) => chat.id === current.id) ?? current
-              : nextChats[0] ?? null,
+              : isMobile
+                ? null
+                : nextChats[0] ?? null,
           );
         }
       } catch {
         if (isActive) {
-          setError("Could not load chats.");
+          setError(ru.chats.errors.loadChats);
         }
       } finally {
         if (isActive) {
@@ -57,7 +148,13 @@ export default function ChatsPage() {
     return () => {
       isActive = false;
     };
-  }, []);
+  }, [isMobile]);
+
+  useEffect(() => {
+    if (isMobile === false && !selectedChat && chats.length) {
+      setSelectedChat(chats[0]);
+    }
+  }, [chats, isMobile, selectedChat]);
 
   useEffect(() => {
     const normalizedQuery = query.trim();
@@ -83,7 +180,7 @@ export default function ChatsPage() {
       } catch {
         if (isActive) {
           setResults([]);
-          setError("Could not search users.");
+          setError(ru.chats.errors.searchUsers);
         }
       } finally {
         if (isActive) {
@@ -120,7 +217,7 @@ export default function ChatsPage() {
       } catch {
         if (isActive) {
           setMessages([]);
-          setMessageError("Could not load messages.");
+          setMessageError(ru.chats.errors.loadMessages);
         }
       } finally {
         if (isActive) {
@@ -147,7 +244,7 @@ export default function ChatsPage() {
     socket?.emit("joinChat", { chatId: selectedChat.id });
     socket?.on("newMessage", handleNewMessage);
     socket?.on("connect_error", () => {
-      setMessageError("Realtime connection failed.");
+      setMessageError(ru.chats.errors.realtimeConnection);
     });
 
     return () => {
@@ -176,7 +273,7 @@ export default function ChatsPage() {
         return [chat, ...withoutChat];
       });
     } catch {
-      setError("Could not create chat.");
+      setError(ru.chats.errors.createChat);
     } finally {
       setPendingUserId(null);
     }
@@ -192,7 +289,7 @@ export default function ChatsPage() {
 
     const socket = getSocket();
     if (!socket) {
-      setMessageError("Realtime connection is not ready.");
+      setMessageError(ru.chats.errors.realtimeNotReady);
       return;
     }
 
@@ -206,7 +303,7 @@ export default function ChatsPage() {
         setIsSending(false);
 
         if (response && "error" in response && response.error) {
-          setMessageError(response.error);
+          setMessageError(ru.chats.errors.sendMessage);
           return;
         }
 
@@ -215,43 +312,82 @@ export default function ChatsPage() {
     );
   }
 
+  function handleBackToChats() {
+    setSelectedChat(null);
+    setMessageError(null);
+  }
+
+  function handleSidebarResizeStart(event: React.PointerEvent<HTMLButtonElement>) {
+    if (isMobile !== false) {
+      return;
+    }
+
+    event.preventDefault();
+    setIsResizingSidebar(true);
+  }
+
   return (
-    <main className="flex min-h-screen bg-[#0e1621] text-[#f5f8fb]">
-      <aside className="flex w-full max-w-[420px] flex-col border-r border-white/5 bg-[#17212b] sm:min-w-[360px]">
-        <header className="border-b border-white/5 px-4 py-4">
-          <div className="flex items-center gap-3">
+    <main className="flex h-dvh min-h-dvh w-full overflow-hidden bg-[#0e1621] text-[#f5f8fb]">
+      <aside
+        ref={sidebarRef}
+        className={`relative min-h-0 w-full flex-col border-r border-white/5 bg-[#17212b] md:flex md:shrink-0 ${
+          selectedChat ? "hidden" : "flex"
+        }`}
+        style={
+          isMobile === false
+            ? {
+                width: sidebarWidth,
+                minWidth: sidebarWidth,
+                maxWidth: sidebarWidth,
+              }
+            : undefined
+        }
+      >
+        <header
+          className={`border-b border-white/5 py-4 ${
+            isCompactSidebar ? "px-3" : "px-4"
+          }`}
+        >
+          <div
+            className={`flex items-center ${
+              isCompactSidebar ? "justify-center" : "gap-3"
+            }`}
+          >
             <Avatar
               avatarUrl={currentUser?.avatarUrl ?? null}
               label={getUserLabel(currentUser)}
             />
-            <div className="min-w-0">
+            <div className={`min-w-0 ${isCompactSidebar ? "hidden" : "block"}`}>
               <p className="truncate text-[15px] font-semibold text-white">
                 {currentUser?.displayName || currentUser?.username || "Linka"}
               </p>
               <p className="truncate text-sm text-[#8fa3b5]">
-                @{currentUser?.username ?? "loading"}
+                @{currentUser?.username ?? ru.chats.loadingProfile}
               </p>
             </div>
           </div>
         </header>
 
-        <div className="border-b border-white/5 px-4 py-3">
-          <label className="block">
-            <span className="sr-only">Search users</span>
-            <input
-              className="h-11 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search users"
-              autoComplete="off"
-            />
-          </label>
-        </div>
+        {isCompactSidebar ? null : (
+          <div className="border-b border-white/5 px-4 py-3">
+            <label className="block">
+              <span className="sr-only">{ru.chats.searchUsers}</span>
+              <input
+                className="h-11 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={ru.chats.searchUsers}
+                autoComplete="off"
+              />
+            </label>
+          </div>
+        )}
 
         <section className="min-h-0 flex-1 overflow-y-auto">
-          {query.trim() ? (
+          {!isCompactSidebar && query.trim() ? (
             <SearchResults
+              compact={isCompactSidebar}
               error={error}
               isSearching={isSearching}
               onUserClick={handleUserClick}
@@ -261,12 +397,24 @@ export default function ChatsPage() {
           ) : (
             <ChatList
               chats={chats}
+              compact={isCompactSidebar}
               isLoading={isLoadingChats}
               onSelectChat={setSelectedChat}
               selectedChatId={selectedChat?.id ?? null}
             />
           )}
         </section>
+
+        <button
+          aria-label={ru.chats.resizeSidebar}
+          className={`absolute -right-[5px] top-0 z-10 hidden h-full w-[10px] cursor-col-resize items-center justify-center md:flex ${
+            isResizingSidebar ? "bg-[#2aabee]/10" : "bg-transparent"
+          }`}
+          onPointerDown={handleSidebarResizeStart}
+          type="button"
+        >
+          <span className="h-12 w-[2px] rounded-full bg-white/10 transition" />
+        </button>
       </aside>
 
       <ChatArea
@@ -277,6 +425,7 @@ export default function ChatsPage() {
         messageText={messageText}
         messages={messages}
         messagesEndRef={messagesEndRef}
+        onBackToChats={handleBackToChats}
         onMessageTextChange={setMessageText}
         onSendMessage={handleSendMessage}
         selectedChat={selectedChat}
@@ -287,21 +436,23 @@ export default function ChatsPage() {
 
 function ChatList({
   chats,
+  compact,
   isLoading,
   onSelectChat,
   selectedChatId,
 }: {
   chats: Chat[];
+  compact: boolean;
   isLoading: boolean;
   onSelectChat: (chat: Chat) => void;
   selectedChatId: string | null;
 }) {
   if (isLoading) {
-    return <StateMessage>Loading chats...</StateMessage>;
+    return <StateMessage>{ru.chats.loadingChats}</StateMessage>;
   }
 
   if (!chats.length) {
-    return <StateMessage>Search users to start a private chat.</StateMessage>;
+    return <StateMessage>{ru.chats.noChats}</StateMessage>;
   }
 
   return (
@@ -309,24 +460,25 @@ function ChatList({
       {chats.map((chat) => (
         <li key={chat.id}>
           <button
-            className={`flex w-full items-center gap-3 px-4 py-3 text-left transition ${
+            className={`flex w-full items-center px-4 py-3 text-left transition ${
               selectedChatId === chat.id
                 ? "bg-[#2aabee]/15"
                 : "hover:bg-white/[0.03]"
-            }`}
+            } ${compact ? "justify-center px-3" : "gap-3"}`}
             onClick={() => onSelectChat(chat)}
             type="button"
+            title={chat.partner?.username ? `@${chat.partner.username}` : ru.chats.privateChat}
           >
             <Avatar
               avatarUrl={chat.partner?.avatarUrl ?? null}
-              label={chat.partner?.displayName || chat.partner?.username || "Chat"}
+              label={chat.partner?.displayName || chat.partner?.username || ru.chats.privateChat}
             />
-            <div className="min-w-0">
+            <div className={`min-w-0 ${compact ? "hidden" : "block"}`}>
               <p className="truncate text-[15px] font-medium text-white">
-                {chat.partner?.displayName || chat.partner?.username || "Private chat"}
+                {chat.partner?.displayName || chat.partner?.username || ru.chats.privateChat}
               </p>
               <p className="truncate text-sm text-[#8fa3b5]">
-                {chat.partner ? `@${chat.partner.username}` : "No participant"}
+                {chat.partner ? `@${chat.partner.username}` : ru.chats.noParticipant}
               </p>
             </div>
           </button>
@@ -337,12 +489,14 @@ function ChatList({
 }
 
 function SearchResults({
+  compact,
   error,
   isSearching,
   onUserClick,
   pendingUserId,
   results,
 }: {
+  compact: boolean;
   error: string | null;
   isSearching: boolean;
   onUserClick: (user: AuthUser) => void;
@@ -350,7 +504,7 @@ function SearchResults({
   results: AuthUser[];
 }) {
   if (isSearching) {
-    return <StateMessage>Searching...</StateMessage>;
+    return <StateMessage>{ru.chats.searching}</StateMessage>;
   }
 
   if (error) {
@@ -358,7 +512,7 @@ function SearchResults({
   }
 
   if (!results.length) {
-    return <StateMessage>No users found.</StateMessage>;
+    return <StateMessage>{ru.chats.noUsersFound}</StateMessage>;
   }
 
   return (
@@ -366,21 +520,24 @@ function SearchResults({
       {results.map((user) => (
         <li key={user.id}>
           <button
-            className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03] disabled:cursor-not-allowed disabled:opacity-60"
+            className={`flex w-full items-center px-4 py-3 text-left transition hover:bg-white/[0.03] disabled:cursor-not-allowed disabled:opacity-60 ${
+              compact ? "justify-center px-3" : "gap-3"
+            }`}
             disabled={pendingUserId === user.id}
             onClick={() => onUserClick(user)}
             type="button"
+            title={`@${user.username}`}
           >
             <Avatar
               avatarUrl={user.avatarUrl}
               label={user.displayName || user.username}
             />
-            <div className="min-w-0">
+            <div className={`min-w-0 ${compact ? "hidden" : "block"}`}>
               <p className="truncate text-[15px] font-medium text-white">
                 {user.displayName || user.username}
               </p>
               <p className="truncate text-sm text-[#8fa3b5]">
-                {pendingUserId === user.id ? "Opening chat..." : `@${user.username}`}
+                {pendingUserId === user.id ? ru.chats.openingChat : `@${user.username}`}
               </p>
             </div>
           </button>
@@ -398,6 +555,7 @@ function ChatArea({
   messageText,
   messages,
   messagesEndRef,
+  onBackToChats,
   onMessageTextChange,
   onSendMessage,
   selectedChat,
@@ -409,15 +567,29 @@ function ChatArea({
   messageText: string;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  onBackToChats: () => void;
   onMessageTextChange: (value: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
   selectedChat: Chat | null;
 }) {
   return (
-    <section className="hidden min-w-0 flex-1 flex-col bg-[#0e1621] sm:flex">
+    <section
+      className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0e1621] md:flex ${
+        selectedChat ? "flex" : "hidden"
+      }`}
+    >
       {selectedChat?.partner ? (
         <>
-          <header className="flex h-[73px] shrink-0 items-center gap-3 border-b border-white/5 bg-[#17212b] px-5">
+          <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-white/5 bg-[#17212b] px-3 md:h-[73px] md:px-5">
+            <button
+              aria-label={ru.chats.backToChats}
+              className="flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-[15px] font-medium text-[#2aabee] transition hover:bg-white/[0.04] md:hidden"
+              onClick={onBackToChats}
+              type="button"
+            >
+              <span aria-hidden="true">{"<"}</span>
+              <span>{ru.chats.back}</span>
+            </button>
             <Avatar
               avatarUrl={selectedChat.partner.avatarUrl}
               label={selectedChat.partner.displayName || selectedChat.partner.username}
@@ -432,9 +604,9 @@ function ChatArea({
             </div>
           </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 md:px-5 md:py-5">
             {isLoadingMessages ? (
-              <StateMessage>Loading messages...</StateMessage>
+              <StateMessage>{ru.chats.loadingMessages}</StateMessage>
             ) : messages.length ? (
               <div className="space-y-2">
                 {messages.map((message) => (
@@ -450,10 +622,10 @@ function ChatArea({
               <div className="flex h-full items-center justify-center text-center">
                 <div>
                   <h1 className="text-2xl font-semibold text-white">
-                    {`\u0427\u0430\u0442 \u0441 @${selectedChat.partner.username}`}
+                    {ru.chats.chatWith(selectedChat.partner.username)}
                   </h1>
                   <p className="mt-2 max-w-sm text-sm text-[#8fa3b5]">
-                    {"\u041d\u0430\u043f\u0438\u0448\u0438\u0442\u0435 \u043f\u0435\u0440\u0432\u043e\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u0432 Linka."}
+                    {ru.chats.firstMessageHint}
                   </p>
                   <div ref={messagesEndRef} />
                 </div>
@@ -462,15 +634,15 @@ function ChatArea({
           </div>
 
           <form
-            className="shrink-0 border-t border-white/5 bg-[#17212b] px-4 py-3"
+            className="shrink-0 border-t border-white/5 bg-[#17212b] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
             onSubmit={onSendMessage}
           >
             {messageError ? (
               <p className="mb-2 text-sm text-red-200">{messageError}</p>
             ) : null}
-            <div className="flex items-end gap-3">
+            <div className="flex min-w-0 items-end gap-2 md:gap-3">
               <textarea
-                className="max-h-32 min-h-11 flex-1 resize-none rounded-md border border-white/5 bg-[#242f3d] px-4 py-3 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+                className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-white/5 bg-[#242f3d] px-4 py-3 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
                 onChange={(event) => onMessageTextChange(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -478,15 +650,15 @@ function ChatArea({
                     event.currentTarget.form?.requestSubmit();
                   }
                 }}
-                placeholder="Message"
+                placeholder={ru.chats.messagePlaceholder}
                 value={messageText}
               />
               <button
-                className="h-11 rounded-md bg-[#2aabee] px-5 text-[15px] font-semibold text-white transition hover:bg-[#239bd8] disabled:cursor-not-allowed disabled:opacity-60"
+                className="h-11 shrink-0 rounded-md bg-[#2aabee] px-4 text-[15px] font-semibold text-white transition hover:bg-[#239bd8] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
                 disabled={isSending || !messageText.trim()}
                 type="submit"
               >
-                {isSending ? "Sending..." : "Send"}
+                {isSending ? ru.chats.sending : ru.chats.send}
               </button>
             </div>
           </form>
@@ -498,10 +670,10 @@ function ChatArea({
               L
             </div>
             <h1 className="text-2xl font-semibold text-white">
-              {"\u0412\u044b\u0431\u0435\u0440\u0438\u0442\u0435 \u0447\u0430\u0442"}
+              {ru.chats.chooseChat}
             </h1>
             <p className="mt-2 max-w-sm text-sm text-[#8fa3b5]">
-              {"\u041d\u0430\u0439\u0434\u0438\u0442\u0435 \u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u0442\u0435\u043b\u044f \u0441\u043b\u0435\u0432\u0430 \u0438 \u043e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0447\u0430\u0442 \u0432 Linka."}
+              {ru.chats.chooseChatHint}
             </p>
           </div>
         </div>
@@ -520,7 +692,7 @@ function MessageBubble({
   return (
     <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[70%] rounded-lg px-3 py-2 text-[15px] shadow-sm ${
+        className={`max-w-[85%] rounded-lg px-3 py-2 text-[15px] shadow-sm md:max-w-[70%] ${
           isOwn ? "bg-[#2aabee] text-white" : "bg-[#17212b] text-[#f5f8fb]"
         }`}
       >
@@ -585,4 +757,11 @@ function formatMessageTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function clampSidebarWidth(width: number) {
+  return Math.min(
+    MAX_SIDEBAR_WIDTH,
+    Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)),
+  );
 }

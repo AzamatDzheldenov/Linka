@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
+import { ru } from "@/lib/i18n/ru";
 
 export default function RegisterPage() {
   const router = useRouter();
@@ -20,7 +21,7 @@ export default function RegisterPage() {
     setError(null);
 
     if (password !== confirmPassword) {
-      setError("Passwords do not match.");
+      setError(ru.auth.errors.passwordsDoNotMatch);
       return;
     }
 
@@ -44,24 +45,24 @@ export default function RegisterPage() {
             L
           </div>
           <h1 className="text-2xl font-semibold tracking-normal text-white">
-            Create your Linka account
+            {ru.auth.registerTitle}
           </h1>
           <p className="mt-2 text-sm text-[#8fa3b5]">
-            Choose a username and secure password.
+            {ru.auth.registerSubtitle}
           </p>
         </div>
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Username
+              {ru.auth.username}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="text"
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="yourname"
+              placeholder={ru.auth.usernamePlaceholder}
               autoComplete="username"
               disabled={isLoading}
               minLength={3}
@@ -72,14 +73,14 @@ export default function RegisterPage() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Email
+              {ru.auth.email}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
+              placeholder={ru.auth.emailPlaceholder}
               autoComplete="email"
               disabled={isLoading}
               required
@@ -88,14 +89,14 @@ export default function RegisterPage() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Password
+              {ru.auth.password}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="At least 8 characters"
+              placeholder={ru.auth.passwordHint}
               autoComplete="new-password"
               disabled={isLoading}
               minLength={8}
@@ -105,14 +106,14 @@ export default function RegisterPage() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Confirm password
+              {ru.auth.confirmPassword}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="password"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
-              placeholder="Repeat your password"
+              placeholder={ru.auth.confirmPasswordPlaceholder}
               autoComplete="new-password"
               disabled={isLoading}
               minLength={8}
@@ -131,17 +132,17 @@ export default function RegisterPage() {
             type="submit"
             disabled={isLoading}
           >
-            {isLoading ? "Creating account..." : "Create account"}
+            {isLoading ? ru.auth.creatingAccount : ru.auth.createAccount}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-[#8fa3b5]">
-          Already have an account?{" "}
+          {ru.auth.alreadyHaveAccount}{" "}
           <Link
             className="font-medium text-[#2aabee] transition hover:text-[#55c2f2]"
             href="/login"
           >
-            Sign in
+            {ru.auth.loginLink}
           </Link>
         </p>
       </section>
@@ -152,11 +153,11 @@ export default function RegisterPage() {
 function getRegisterError(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 409) {
-      return "Username or email is already taken.";
+      return ru.auth.errors.userExists;
     }
 
-    return error.message;
+    return ru.auth.errors.registerFailed;
   }
 
-  return "Could not create an account. Please try again.";
+  return ru.auth.errors.registerFailed;
 }

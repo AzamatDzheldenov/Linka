@@ -3,6 +3,7 @@
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { refresh } from "@/lib/api/auth";
+import { ru } from "@/lib/i18n/ru";
 import { useAuthStore } from "@/store/auth-store";
 
 const publicRoutes = new Set(["/login", "/register"]);
@@ -70,7 +71,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#0e1621] px-4 text-[#f5f8fb]">
         <div className="rounded-lg border border-white/5 bg-[#17212b] px-5 py-4 text-sm text-[#8fa3b5] shadow-2xl shadow-black/30">
-          Restoring session...
+          {ru.auth.restoreSession}
         </div>
       </main>
     );

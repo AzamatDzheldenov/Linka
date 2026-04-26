@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 import { login } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
+import { ru } from "@/lib/i18n/ru";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -36,24 +37,24 @@ export default function LoginPage() {
             L
           </div>
           <h1 className="text-2xl font-semibold tracking-normal text-white">
-            Sign in to Linka
+            {ru.auth.loginTitle}
           </h1>
           <p className="mt-2 text-sm text-[#8fa3b5]">
-            Continue with your email and password.
+            {ru.auth.loginSubtitle}
           </p>
         </div>
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Email
+              {ru.auth.email}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
+              placeholder={ru.auth.emailPlaceholder}
               autoComplete="email"
               disabled={isLoading}
               required
@@ -62,14 +63,14 @@ export default function LoginPage() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Password
+              {ru.auth.password}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="Your password"
+              placeholder={ru.auth.passwordPlaceholder}
               autoComplete="current-password"
               disabled={isLoading}
               required
@@ -87,17 +88,17 @@ export default function LoginPage() {
             type="submit"
             disabled={isLoading}
           >
-            {isLoading ? "Signing in..." : "Sign in"}
+            {isLoading ? ru.auth.signingIn : ru.auth.signIn}
           </button>
         </form>
 
         <p className="mt-6 text-center text-sm text-[#8fa3b5]">
-          No account?{" "}
+          {ru.auth.noAccount}{" "}
           <Link
             className="font-medium text-[#2aabee] transition hover:text-[#55c2f2]"
             href="/register"
           >
-            Create one
+            {ru.auth.registerLink}
           </Link>
         </p>
       </section>
@@ -108,11 +109,11 @@ export default function LoginPage() {
 function getLoginError(error: unknown) {
   if (error instanceof ApiError) {
     if (error.status === 401) {
-      return "Email or password is incorrect.";
+      return ru.auth.errors.invalidCredentials;
     }
 
-    return error.message;
+    return ru.auth.errors.loginFailed;
   }
 
-  return "Could not sign in. Please try again.";
+  return ru.auth.errors.loginFailed;
 }

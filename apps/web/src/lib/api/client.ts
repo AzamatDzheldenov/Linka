@@ -1,4 +1,5 @@
 import { getAccessToken } from "../../store/auth-store";
+import { ru } from "@/lib/i18n/ru";
 
 declare const process: {
   env: {
@@ -82,5 +83,5 @@ function getErrorMessage(payload: unknown, fallback: string) {
     return payload.message;
   }
 
-  return fallback || "Request failed";
+  return fallback || ru.app.requestFailed;
 }
