@@ -1,11 +1,18 @@
-"use client";
+﻿"use client";
 
-import { FormEvent, useEffect, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Chat, createPrivateChat, getChats } from "@/lib/api/chats";
-import { getMessages, Message } from "@/lib/api/messages";
-import { getSocket } from "@/lib/socket/client";
+import { API_BASE_URL, ApiError } from "@/lib/api/client";
+import { getMessages, Message, sendMediaMessage } from "@/lib/api/messages";
+import { logout } from "@/lib/api/auth";
+import {
+  emitTypingStart,
+  emitTypingStop,
+  getSocket,
+} from "@/lib/socket/client";
 import { ru } from "@/lib/i18n/ru";
-import { searchUsers } from "@/lib/api/users";
+import { searchUsers, uploadAvatar } from "@/lib/api/users";
 import { AuthUser, useAuthStore } from "@/store/auth-store";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
@@ -13,8 +20,25 @@ const MIN_SIDEBAR_WIDTH = 72;
 const DEFAULT_SIDEBAR_WIDTH = 320;
 const MAX_SIDEBAR_WIDTH = 420;
 const COMPACT_SIDEBAR_WIDTH = 96;
+const TYPING_STOP_DELAY_MS = 1400;
+
+type TypingUser = {
+  chatId: string;
+  userId: string;
+  username: string;
+  displayName: string | null;
+};
+
+type ReceiptUpdate = {
+  chatId: string;
+  userId: string;
+  messageIds: string[];
+  deliveredAt?: string;
+  readAt?: string;
+};
 
 export default function ChatsPage() {
+  const router = useRouter();
   const currentUser = useAuthStore((state) => state.currentUser);
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -25,16 +49,23 @@ export default function ChatsPage() {
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageText, setMessageText] = useState("");
+  const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const typingStopTimeoutRef = useRef<number | null>(null);
+  const activeTypingChatIdRef = useRef<string | null>(null);
   const isCompactSidebar = !isMobile && sidebarWidth <= COMPACT_SIDEBAR_WIDTH;
 
   useEffect(() => {
@@ -198,6 +229,7 @@ export default function ChatsPage() {
   useEffect(() => {
     if (!selectedChat) {
       setMessages([]);
+      setTypingUsers([]);
       return;
     }
 
@@ -213,6 +245,7 @@ export default function ChatsPage() {
 
         if (isActive) {
           setMessages(history);
+          socket?.emit("markAsRead", { chatId });
         }
       } catch {
         if (isActive) {
@@ -238,22 +271,102 @@ export default function ChatsPage() {
 
         return [...currentMessages, message];
       });
+
+      if (message.senderId !== currentUser?.id) {
+        socket?.emit("markAsRead", { chatId: selectedChat.id });
+      }
+    }
+
+    function handleMessageDelivered(payload: ReceiptUpdate) {
+      updateMessageReceipts(payload, "delivered");
+    }
+
+    function handleMessageRead(payload: ReceiptUpdate) {
+      updateMessageReceipts(payload, "read");
+    }
+
+    function handleTypingStart(payload: TypingUser) {
+      if (payload.chatId !== selectedChat?.id) {
+        return;
+      }
+
+      setTypingUsers((currentUsers) => {
+        if (currentUsers.some((user) => user.userId === payload.userId)) {
+          return currentUsers;
+        }
+
+        return [...currentUsers, payload];
+      });
+    }
+
+    function handleTypingStop(payload: TypingUser) {
+      if (payload.chatId !== selectedChat?.id) {
+        return;
+      }
+
+      setTypingUsers((currentUsers) =>
+        currentUsers.filter((user) => user.userId !== payload.userId),
+      );
     }
 
     void loadMessages(selectedChat.id);
+    setTypingUsers([]);
     socket?.emit("joinChat", { chatId: selectedChat.id });
     socket?.on("newMessage", handleNewMessage);
+    socket?.on("message:delivered", handleMessageDelivered);
+    socket?.on("message:read", handleMessageRead);
+    socket?.on("userTyping:start", handleTypingStart);
+    socket?.on("userTyping:stop", handleTypingStop);
     socket?.on("connect_error", () => {
       setMessageError(ru.chats.errors.realtimeConnection);
     });
 
     return () => {
       isActive = false;
+      stopTyping(selectedChat.id);
       socket?.emit("leaveChat", { chatId: selectedChat.id });
       socket?.off("newMessage", handleNewMessage);
+      socket?.off("message:delivered", handleMessageDelivered);
+      socket?.off("message:read", handleMessageRead);
+      socket?.off("userTyping:start", handleTypingStart);
+      socket?.off("userTyping:stop", handleTypingStop);
       socket?.off("connect_error");
     };
-  }, [selectedChat]);
+  }, [currentUser?.id, selectedChat]);
+
+  function updateMessageReceipts(
+    payload: ReceiptUpdate,
+    status: "delivered" | "read",
+  ) {
+    setMessages((currentMessages) =>
+      currentMessages.map((message) => {
+        if (
+          message.chatId !== payload.chatId ||
+          !payload.messageIds.includes(message.id)
+        ) {
+          return message;
+        }
+
+        const receipts = message.receipts.map((receipt) => {
+          if (receipt.userId !== payload.userId) {
+            return receipt;
+          }
+
+          return {
+            ...receipt,
+            deliveredAt:
+              receipt.deliveredAt ?? payload.deliveredAt ?? payload.readAt ?? null,
+            readAt:
+              status === "read"
+                ? receipt.readAt ?? payload.readAt ?? null
+                : receipt.readAt,
+          };
+        });
+
+        return { ...message, receipts };
+      }),
+    );
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -295,6 +408,7 @@ export default function ChatsPage() {
 
     setIsSending(true);
     setMessageError(null);
+    stopTyping(selectedChat.id);
 
     socket.emit(
       "sendMessage",
@@ -312,9 +426,96 @@ export default function ChatsPage() {
     );
   }
 
+  async function handleMediaChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!selectedChat || !file) {
+      return;
+    }
+
+    const caption = messageText.trim();
+    setIsUploadingMedia(true);
+    setMessageError(null);
+
+    try {
+      await sendMediaMessage(selectedChat.id, file, caption || undefined);
+      stopTyping(selectedChat.id);
+      setMessageText("");
+    } catch (error) {
+      setMessageError(
+        error instanceof ApiError
+          ? error.message
+          : ru.chats.errors.uploadMedia,
+      );
+    } finally {
+      setIsUploadingMedia(false);
+    }
+  }
+
   function handleBackToChats() {
+    if (selectedChat) {
+      stopTyping(selectedChat.id);
+    }
+
     setSelectedChat(null);
     setMessageError(null);
+  }
+
+  function handleMessageTextChange(value: string) {
+    setMessageText(value);
+
+    if (!selectedChat) {
+      return;
+    }
+
+    emitTypingStart(selectedChat.id);
+    activeTypingChatIdRef.current = selectedChat.id;
+
+    if (typingStopTimeoutRef.current) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+    }
+
+    typingStopTimeoutRef.current = window.setTimeout(() => {
+      stopTyping(selectedChat.id);
+    }, TYPING_STOP_DELAY_MS);
+  }
+
+  function stopTyping(chatId: string) {
+    if (typingStopTimeoutRef.current) {
+      window.clearTimeout(typingStopTimeoutRef.current);
+      typingStopTimeoutRef.current = null;
+    }
+
+    if (activeTypingChatIdRef.current === chatId) {
+      activeTypingChatIdRef.current = null;
+    }
+
+    emitTypingStop(chatId);
+  }
+
+  async function handleAvatarChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!file) {
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+    setAvatarError(null);
+
+    try {
+      await uploadAvatar(file);
+    } catch (error) {
+      setAvatarError(
+        error instanceof ApiError
+          ? error.message
+          : ru.chats.errors.uploadAvatar,
+      );
+    } finally {
+      setIsUploadingAvatar(false);
+    }
   }
 
   function handleSidebarResizeStart(event: React.PointerEvent<HTMLButtonElement>) {
@@ -324,6 +525,19 @@ export default function ChatsPage() {
 
     event.preventDefault();
     setIsResizingSidebar(true);
+  }
+
+  async function handleLogout() {
+    setIsLoggingOut(true);
+    setError(null);
+
+    try {
+      await logout();
+      router.replace("/login");
+    } catch {
+      setError(ru.auth.errors.logoutFailed);
+      setIsLoggingOut(false);
+    }
   }
 
   return (
@@ -353,10 +567,29 @@ export default function ChatsPage() {
               isCompactSidebar ? "justify-center" : "gap-3"
             }`}
           >
-            <Avatar
-              avatarUrl={currentUser?.avatarUrl ?? null}
-              label={getUserLabel(currentUser)}
-            />
+            <label
+              className={`group relative block shrink-0 rounded-full outline-none ${
+                isUploadingAvatar
+                  ? "cursor-wait opacity-70"
+                  : "cursor-pointer focus-within:ring-2 focus-within:ring-[#2aabee]/40"
+            }`}
+              title={ru.chats.uploadAvatar}
+            >
+              <input
+                accept="image/jpeg,image/png,image/webp"
+                className="sr-only"
+                disabled={isUploadingAvatar}
+                onChange={handleAvatarChange}
+                type="file"
+              />
+              <Avatar
+                avatarUrl={currentUser?.avatarUrl ?? null}
+                label={getUserLabel(currentUser)}
+              />
+              <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
+                {isUploadingAvatar ? "..." : ru.chats.editAvatar}
+              </span>
+            </label>
             <div className={`min-w-0 ${isCompactSidebar ? "hidden" : "block"}`}>
               <p className="truncate text-[15px] font-semibold text-white">
                 {currentUser?.displayName || currentUser?.username || "Linka"}
@@ -366,6 +599,19 @@ export default function ChatsPage() {
               </p>
             </div>
           </div>
+          {avatarError && !isCompactSidebar ? (
+            <p className="mt-3 text-sm text-red-200">{avatarError}</p>
+          ) : null}
+          {!isCompactSidebar ? (
+            <button
+              className="mt-3 h-9 rounded-md px-3 text-sm font-medium text-[#8fa3b5] transition hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isLoggingOut}
+              onClick={handleLogout}
+              type="button"
+            >
+              {isLoggingOut ? ru.auth.loggingOut : ru.auth.logout}
+            </button>
+          ) : null}
         </header>
 
         {isCompactSidebar ? null : (
@@ -421,14 +667,17 @@ export default function ChatsPage() {
         currentUserId={currentUser?.id ?? null}
         isLoadingMessages={isLoadingMessages}
         isSending={isSending}
+        isUploadingMedia={isUploadingMedia}
         messageError={messageError}
         messageText={messageText}
         messages={messages}
         messagesEndRef={messagesEndRef}
         onBackToChats={handleBackToChats}
-        onMessageTextChange={setMessageText}
+        onMediaChange={handleMediaChange}
+        onMessageTextChange={handleMessageTextChange}
         onSendMessage={handleSendMessage}
         selectedChat={selectedChat}
+        typingUsers={typingUsers}
       />
     </main>
   );
@@ -551,27 +800,35 @@ function ChatArea({
   currentUserId,
   isLoadingMessages,
   isSending,
+  isUploadingMedia,
   messageError,
   messageText,
   messages,
   messagesEndRef,
   onBackToChats,
+  onMediaChange,
   onMessageTextChange,
   onSendMessage,
   selectedChat,
+  typingUsers,
 }: {
   currentUserId: string | null;
   isLoadingMessages: boolean;
   isSending: boolean;
+  isUploadingMedia: boolean;
   messageError: string | null;
   messageText: string;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onBackToChats: () => void;
+  onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onMessageTextChange: (value: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
   selectedChat: Chat | null;
+  typingUsers: TypingUser[];
 }) {
+  const typingText = getTypingText(typingUsers);
+
   return (
     <section
       className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0e1621] md:flex ${
@@ -599,7 +856,7 @@ function ChatArea({
                 {selectedChat.partner.displayName || selectedChat.partner.username}
               </p>
               <p className="truncate text-sm text-[#8fa3b5]">
-                @{selectedChat.partner.username}
+                {typingText ?? `@${selectedChat.partner.username}`}
               </p>
             </div>
           </header>
@@ -640,7 +897,25 @@ function ChatArea({
             {messageError ? (
               <p className="mb-2 text-sm text-red-200">{messageError}</p>
             ) : null}
+            {isUploadingMedia ? (
+              <p className="mb-2 text-sm text-[#8fa3b5]">{ru.chats.uploading}</p>
+            ) : null}
             <div className="flex min-w-0 items-end gap-2 md:gap-3">
+              <label
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-white/5 bg-[#242f3d] text-xl font-semibold text-[#2aabee] transition hover:bg-white/[0.04] ${
+                  isUploadingMedia ? "cursor-wait opacity-60" : "cursor-pointer"
+                }`}
+                title={ru.chats.attachFile}
+              >
+                <input
+                  accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/webm,application/pdf"
+                  className="sr-only"
+                  disabled={isUploadingMedia}
+                  onChange={onMediaChange}
+                  type="file"
+                />
+                <span aria-hidden="true">+</span>
+              </label>
               <textarea
                 className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-white/5 bg-[#242f3d] px-4 py-3 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
                 onChange={(event) => onMessageTextChange(event.target.value)}
@@ -655,7 +930,7 @@ function ChatArea({
               />
               <button
                 className="h-11 shrink-0 rounded-md bg-[#2aabee] px-4 text-[15px] font-semibold text-white transition hover:bg-[#239bd8] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
-                disabled={isSending || !messageText.trim()}
+                disabled={isSending || isUploadingMedia || !messageText.trim()}
                 type="submit"
               >
                 {isSending ? ru.chats.sending : ru.chats.send}
@@ -696,16 +971,90 @@ function MessageBubble({
           isOwn ? "bg-[#2aabee] text-white" : "bg-[#17212b] text-[#f5f8fb]"
         }`}
       >
-        <p className="whitespace-pre-wrap break-words">{message.text}</p>
+        <MessageMedia message={message} />
+        {message.text ? (
+          <p className="whitespace-pre-wrap break-words">{message.text}</p>
+        ) : null}
         <p
-          className={`mt-1 text-right text-[11px] ${
+          className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${
             isOwn ? "text-white/75" : "text-[#8fa3b5]"
           }`}
         >
-          {formatMessageTime(message.createdAt)}
+          <span>{formatMessageTime(message.createdAt)}</span>
+          {isOwn ? <MessageStatus status={getMessageStatus(message)} /> : null}
         </p>
       </div>
     </div>
+  );
+}
+
+function MessageStatus({ status }: { status: "sent" | "delivered" | "read" }) {
+  const isRead = status === "read";
+  const isDelivered = status === "delivered" || isRead;
+  const label = getMessageStatusLabel(status);
+
+  return (
+    <span
+      aria-label={label}
+      className={`inline-flex w-5 justify-end font-semibold ${
+        isRead ? "text-[#7dd3fc]" : "text-white/70"
+      }`}
+      title={label}
+    >
+      {isDelivered ? "\u2713\u2713" : "\u2713"}
+    </span>
+  );
+}
+
+function MessageMedia({ message }: { message: Message }) {
+  if (!message.mediaUrl || !message.mediaType) {
+    return null;
+  }
+
+  const url = resolveUploadUrl(message.mediaUrl);
+
+  if (message.mediaType === "image") {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img
+        alt=""
+        className="mb-2 max-h-[320px] w-full max-w-[320px] rounded-md object-cover"
+        src={url}
+      />
+    );
+  }
+
+  if (message.mediaType === "video") {
+    return (
+      <video
+        className="mb-2 max-h-[320px] w-full max-w-[360px] rounded-md bg-black"
+        controls
+        src={url}
+      />
+    );
+  }
+
+  if (message.mediaType === "audio") {
+    return <audio className="mb-2 w-[260px] max-w-full" controls src={url} />;
+  }
+
+  return (
+    <a
+      className="mb-2 flex max-w-[280px] items-center gap-3 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-white transition hover:bg-black/20"
+      href={url}
+      rel="noreferrer"
+      target="_blank"
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#2aabee]/20 text-xs font-semibold text-white">
+        PDF
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate text-sm font-semibold">
+          {getUploadFilename(message.mediaUrl)}
+        </span>
+        <span className="block text-xs text-white/70">{ru.chats.openDocument}</span>
+      </span>
+    </a>
   );
 }
 
@@ -720,7 +1069,11 @@ function Avatar({
     <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#242f3d] text-sm font-semibold text-[#2aabee]">
       {avatarUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img alt="" className="h-full w-full object-cover" src={avatarUrl} />
+        <img
+          alt=""
+          className="h-full w-full object-cover"
+          src={resolveUploadUrl(avatarUrl)}
+        />
       ) : (
         label.slice(0, 1).toUpperCase()
       )}
@@ -757,6 +1110,60 @@ function formatMessageTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function getMessageStatus(message: Message) {
+  if (!message.receipts?.length) {
+    return "sent";
+  }
+
+  if (message.receipts.every((receipt) => receipt.readAt)) {
+    return "read";
+  }
+
+  if (
+    message.receipts.some((receipt) => receipt.deliveredAt || receipt.readAt)
+  ) {
+    return "delivered";
+  }
+
+  return "sent";
+}
+
+function getMessageStatusLabel(status: "sent" | "delivered" | "read") {
+  if (status === "read") {
+    return ru.chats.statusRead;
+  }
+
+  if (status === "delivered") {
+    return ru.chats.statusDelivered;
+  }
+
+  return ru.chats.statusSent;
+}
+
+function resolveUploadUrl(url: string) {
+  if (url.startsWith("/")) {
+    return `${API_BASE_URL}${url}`;
+  }
+
+  return url;
+}
+
+function getUploadFilename(url: string) {
+  return url.split("/").filter(Boolean).at(-1) ?? "document.pdf";
+}
+
+function getTypingText(users: TypingUser[]) {
+  if (users.length === 0) {
+    return null;
+  }
+
+  if (users.length === 1) {
+    return ru.chats.typing;
+  }
+
+  return ru.chats.severalTyping;
 }
 
 function clampSidebarWidth(width: number) {

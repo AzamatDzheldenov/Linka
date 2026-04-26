@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { PrismaModule } from "../prisma/prisma.module";
 import { MessagesController } from "./messages.controller";
+import { MessagesEventsService } from "./messages-events.service";
 import { MessagesGateway } from "./messages.gateway";
 import { MessagesService } from "./messages.service";
 
@@ -13,6 +14,6 @@ import { MessagesService } from "./messages.service";
     }),
   ],
   controllers: [MessagesController],
-  providers: [MessagesService, MessagesGateway],
+  providers: [MessagesService, MessagesEventsService, MessagesGateway],
 })
 export class MessagesModule {}

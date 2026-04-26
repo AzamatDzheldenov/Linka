@@ -18,6 +18,7 @@ model User {
   refreshTokens RefreshToken[]
   chatMemberships ChatMember[]
   sentMessages    Message[]      @relation("MessageSender")
+  messageReceipts MessageReceipt[]
 }
 
 model RefreshToken {
@@ -71,7 +72,25 @@ model Message {
 
   chat   Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
   sender User @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  receipts MessageReceipt[]
 
   @@index([chatId, createdAt])
   @@index([senderId])
+}
+
+model MessageReceipt {
+  id          String    @id @default(uuid()) @db.Uuid
+  messageId   String    @db.Uuid
+  userId      String    @db.Uuid
+  deliveredAt DateTime?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([userId])
+  @@index([messageId])
 }

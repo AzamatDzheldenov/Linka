@@ -26,6 +26,19 @@ export async function updateMe(input: UpdateMeInput) {
   return user;
 }
 
+export async function uploadAvatar(file: File) {
+  const formData = new FormData();
+  formData.append("avatar", file);
+
+  const user = await apiRequest<AuthUser>("/users/me/avatar", {
+    method: "POST",
+    body: formData,
+  });
+
+  useAuthStore.getState().setCurrentUser(user);
+  return user;
+}
+
 export async function searchUsers(query: string) {
   const params = new URLSearchParams({ q: query });
 

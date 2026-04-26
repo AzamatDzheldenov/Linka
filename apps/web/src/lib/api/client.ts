@@ -1,4 +1,4 @@
-import { getAccessToken } from "../../store/auth-store";
+import { AuthUser, getAccessToken, useAuthStore } from "../../store/auth-store";
 import { ru } from "@/lib/i18n/ru";
 
 declare const process: {
@@ -7,8 +7,8 @@ declare const process: {
   };
 };
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:3001";
+export const API_BASE_URL =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "http://localhost:3002";
 
 type ApiRequestOptions = Omit<RequestInit, "body"> & {
   body?: unknown;
@@ -29,6 +29,14 @@ export class ApiError extends Error {
 export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {},
+): Promise<T> {
+  return request<T>(path, options, true);
+}
+
+async function request<T>(
+  path: string,
+  options: ApiRequestOptions,
+  allowRefresh: boolean,
 ): Promise<T> {
   const { body, headers, auth = true, ...requestOptions } = options;
   const requestHeaders = new Headers(headers);
@@ -52,11 +60,41 @@ export async function apiRequest<T>(
 
   const payload = await readResponse(response);
 
+  if (response.status === 401 && auth && allowRefresh && (await refreshAccessToken())) {
+    return request<T>(path, options, false);
+  }
+
   if (!response.ok) {
     throw new ApiError(getErrorMessage(payload, response.statusText), response.status, payload);
   }
 
   return payload as T;
+}
+
+async function refreshAccessToken() {
+  const response = await fetch(`${API_BASE_URL}/auth/refresh`, {
+    method: "POST",
+    credentials: "include",
+  });
+  const payload = await readResponse(response);
+
+  if (!response.ok || !payload || typeof payload !== "object") {
+    useAuthStore.getState().clearAuth();
+    return false;
+  }
+
+  if (
+    "accessToken" in payload &&
+    typeof payload.accessToken === "string" &&
+    "user" in payload
+  ) {
+    useAuthStore.getState().setAccessToken(payload.accessToken);
+    useAuthStore.getState().setCurrentUser(payload.user as AuthUser);
+    return true;
+  }
+
+  useAuthStore.getState().clearAuth();
+  return false;
 }
 
 async function readResponse(response: Response) {

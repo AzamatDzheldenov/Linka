@@ -4,12 +4,14 @@ import {
   MessageBody,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
   WsException,
 } from "@nestjs/websockets";
 import { Server, Socket } from "socket.io";
+import { MessagesEventsService } from "./messages-events.service";
 import { MessagesService } from "./messages.service";
 
 type AuthenticatedSocket = Socket & {
@@ -22,20 +24,35 @@ type AccessTokenPayload = {
   sub: string;
 };
 
+type TypingPayload = {
+  chatId?: string;
+};
+
+type MarkAsReadPayload = {
+  chatId?: string;
+};
+
 @WebSocketGateway({
   cors: {
     origin: process.env.WEB_URL ?? process.env.FRONTEND_URL ?? "http://localhost:3000",
     credentials: true,
   },
 })
-export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class MessagesGateway
+  implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
+{
   @WebSocketServer()
   private readonly server!: Server;
 
   constructor(
     private readonly messagesService: MessagesService,
+    private readonly messagesEventsService: MessagesEventsService,
     private readonly jwtService: JwtService,
   ) {}
+
+  afterInit(server: Server) {
+    this.messagesEventsService.setServer(server);
+  }
 
   async handleConnection(client: AuthenticatedSocket) {
     const accessToken = this.getAccessToken(client);
@@ -59,6 +76,7 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       }
 
       client.data.userId = payload.sub;
+      await client.join(this.messagesEventsService.getUserRoomName(payload.sub));
     } catch {
       client.disconnect(true);
     }
@@ -78,6 +96,8 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     await this.messagesService.assertChatMember(userId, chatId);
     await client.join(this.getRoomName(chatId));
+    const deliveredUpdates = await this.messagesService.markDelivered(userId, chatId);
+    this.emitReceiptUpdates("message:delivered", deliveredUpdates);
 
     return { chatId };
   }
@@ -111,8 +131,72 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
       text,
     });
 
-    this.server.to(this.getRoomName(chatId)).emit("newMessage", message);
+    this.messagesEventsService.emitNewMessage(chatId, message);
     return message;
+  }
+
+  @SubscribeMessage("typing:start")
+  async typingStart(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() payload: TypingPayload,
+  ) {
+    return this.emitTypingEvent(client, payload, "userTyping:start");
+  }
+
+  @SubscribeMessage("markAsRead")
+  async markAsRead(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() payload: MarkAsReadPayload,
+  ) {
+    const userId = this.requireUserId(client);
+    const chatId = this.requireChatId(payload.chatId);
+    const readUpdates = await this.messagesService.markRead(userId, chatId);
+    this.emitReceiptUpdates("message:read", readUpdates);
+
+    return { chatId };
+  }
+
+  @SubscribeMessage("typing:stop")
+  async typingStop(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() payload: TypingPayload,
+  ) {
+    return this.emitTypingEvent(client, payload, "userTyping:stop");
+  }
+
+  private async emitTypingEvent(
+    client: AuthenticatedSocket,
+    payload: TypingPayload,
+    eventName: "userTyping:start" | "userTyping:stop",
+  ) {
+    const userId = this.requireUserId(client);
+    const chatId = this.requireChatId(payload.chatId);
+    const user = await this.messagesService.getTypingUser(userId, chatId);
+
+    client.to(this.getRoomName(chatId)).emit(eventName, {
+      chatId,
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName,
+    });
+
+    return { chatId };
+  }
+
+  private emitReceiptUpdates(
+    eventName: "message:delivered" | "message:read",
+    updates: Array<{
+      senderId: string;
+      chatId: string;
+      userId: string;
+      messageIds: string[];
+      deliveredAt?: Date;
+      readAt?: Date;
+    }>,
+  ) {
+    updates.forEach((update) => {
+      this.messagesEventsService.emitToUser(update.senderId, eventName, update);
+    });
   }
 
   private getAccessToken(client: Socket) {
@@ -147,6 +231,6 @@ export class MessagesGateway implements OnGatewayConnection, OnGatewayDisconnect
   }
 
   private getRoomName(chatId: string) {
-    return `chat:${chatId}`;
+    return this.messagesEventsService.getRoomName(chatId);
   }
 }
