@@ -8,10 +8,14 @@ datasource db {
 
 model User {
   id              String         @id @default(uuid()) @db.Uuid
+  firstName       String
+  lastName        String?
   username        String         @unique
   email           String         @unique
   passwordHash    String
   displayName     String?
+  bio             String?
+  nameEmoji       String?
   avatarUrl       String?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -19,6 +23,22 @@ model User {
   chatMemberships ChatMember[]
   sentMessages    Message[]      @relation("MessageSender")
   messageReceipts MessageReceipt[]
+  settings       UserSettings?
+}
+
+model UserSettings {
+  id                       String   @id @default(uuid()) @db.Uuid
+  userId                   String   @unique @db.Uuid
+  showOnlineStatus         Boolean  @default(true)
+  showReadReceipts         Boolean  @default(true)
+  allowSearchByUsername    Boolean  @default(true)
+  messagePreviewEnabled    Boolean  @default(true)
+  pushEnabled              Boolean  @default(false)
+  soundEnabled             Boolean  @default(true)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model RefreshToken {

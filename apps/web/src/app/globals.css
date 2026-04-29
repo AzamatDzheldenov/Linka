@@ -2,6 +2,34 @@
 
 :root {
   color-scheme: dark;
+  --app-bg: #0e1621;
+  --panel-bg: #17212b;
+  --panel-elevated: #1d2a36;
+  --input-bg: #242f3d;
+  --text-main: #f5f8fb;
+  --text-muted: #8fa3b5;
+  --text-soft: #6f8191;
+  --border-soft: rgba(255, 255, 255, 0.05);
+  --hover-soft: rgba(255, 255, 255, 0.04);
+  --active-soft: rgba(42, 171, 238, 0.15);
+  --accent: #2aabee;
+  --accent-hover: #239bd8;
+  --danger: #fca5a5;
+}
+
+html.light {
+  color-scheme: light;
+  --app-bg: #eef3f8;
+  --panel-bg: #ffffff;
+  --panel-elevated: #f7fafc;
+  --input-bg: #edf3f8;
+  --text-main: #182533;
+  --text-muted: #64788b;
+  --text-soft: #8798a8;
+  --border-soft: rgba(24, 37, 51, 0.08);
+  --hover-soft: rgba(42, 171, 238, 0.08);
+  --active-soft: rgba(42, 171, 238, 0.16);
+  --danger: #dc2626;
 }
 
 * {
@@ -15,8 +43,20 @@ body {
 
 body {
   margin: 0;
-  background: #0e1621;
-  color: #f5f8fb;
+  background: var(--app-bg);
+  color: var(--text-main);
+}
+
+html[data-text-size="small"] {
+  font-size: 14px;
+}
+
+html[data-text-size="large"] {
+  font-size: 17px;
+}
+
+html[data-compact="true"] {
+  --compact-gap: 0.75;
 }
 
 button,

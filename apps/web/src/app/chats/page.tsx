@@ -2,6 +2,17 @@
 
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  LogOut,
+  Menu,
+  Monitor,
+  Moon,
+  Settings,
+  Sun,
+  User,
+  X,
+} from "lucide-react";
 import { Chat, createPrivateChat, getChats } from "@/lib/api/chats";
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
 import { getMessages, Message, sendMediaMessage } from "@/lib/api/messages";
@@ -12,8 +23,14 @@ import {
   getSocket,
 } from "@/lib/socket/client";
 import { ru } from "@/lib/i18n/ru";
-import { searchUsers, uploadAvatar } from "@/lib/api/users";
+import {
+  UserSettings,
+  getUserSettings,
+  searchUsers,
+  uploadAvatar,
+} from "@/lib/api/users";
 import { AuthUser, useAuthStore } from "@/store/auth-store";
+import { ThemeMode, useTheme } from "@/providers/theme-provider";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
 const MIN_SIDEBAR_WIDTH = 72;
@@ -27,6 +44,7 @@ type TypingUser = {
   userId: string;
   username: string;
   displayName: string | null;
+  nameEmoji: string | null;
 };
 
 type ReceiptUpdate = {
@@ -40,14 +58,18 @@ type ReceiptUpdate = {
 export default function ChatsPage() {
   const router = useRouter();
   const currentUser = useAuthStore((state) => state.currentUser);
+  const { cycleTheme, theme } = useTheme();
   const [isMobile, setIsMobile] = useState<boolean | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<AuthUser[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [messageText, setMessageText] = useState("");
   const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -62,15 +84,54 @@ export default function ChatsPage() {
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileFileInputRef = useRef<HTMLInputElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const typingStopTimeoutRef = useRef<number | null>(null);
   const activeTypingChatIdRef = useRef<string | null>(null);
+  const selectedChatIdRef = useRef<string | null>(null);
+  const isWindowFocusedRef = useRef(true);
+  const canPlayAudioRef = useRef(false);
+  const messageAudioRef = useRef<HTMLAudioElement | null>(null);
   const isCompactSidebar = !isMobile && sidebarWidth <= COMPACT_SIDEBAR_WIDTH;
 
   useEffect(() => {
     sidebarWidthRef.current = sidebarWidth;
   }, [sidebarWidth]);
+
+  useEffect(() => {
+    selectedChatIdRef.current = selectedChat?.id ?? null;
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    messageAudioRef.current = new Audio("/sounds/message.mp3");
+    messageAudioRef.current.preload = "auto";
+
+    function unlockAudio() {
+      canPlayAudioRef.current = true;
+    }
+
+    function handleFocus() {
+      isWindowFocusedRef.current = true;
+    }
+
+    function handleBlur() {
+      isWindowFocusedRef.current = false;
+    }
+
+    window.addEventListener("pointerdown", unlockAudio, { once: true });
+    window.addEventListener("keydown", unlockAudio, { once: true });
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+
+    return () => {
+      window.removeEventListener("pointerdown", unlockAudio);
+      window.removeEventListener("keydown", unlockAudio);
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+    };
+  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 767px)");
@@ -141,6 +202,110 @@ export default function ChatsPage() {
   }, [isMobile, isResizingSidebar, sidebarWidth]);
 
   useEffect(() => {
+    if (!isUserMenuOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!userMenuRef.current?.contains(event.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsUserMenuOpen(false);
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isUserMenuOpen]);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadUserSettings() {
+      try {
+        const settings = await getUserSettings();
+
+        if (isActive) {
+          setUserSettings(settings);
+        }
+      } catch {
+        if (isActive) {
+          setUserSettings(null);
+        }
+      }
+    }
+
+    void loadUserSettings();
+
+    return () => {
+      isActive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const socket = getSocket();
+
+    if (!socket) {
+      return;
+    }
+
+    const activeSocket = socket;
+
+    function handleChatNewMessage(message: Message) {
+      const isOwnMessage = message.senderId === currentUser?.id;
+      const isActiveChat = selectedChatIdRef.current === message.chatId;
+
+      setChats((currentChats) =>
+        sortChatsByLastMessage(
+          currentChats.map((chat) => {
+            if (chat.id !== message.chatId) {
+              return chat;
+            }
+
+            return {
+              ...chat,
+              lastMessage: message,
+              lastMessageAt: message.createdAt,
+              updatedAt: message.createdAt,
+              unreadCount:
+                isOwnMessage || isActiveChat
+                  ? 0
+                  : Math.min((chat.unreadCount ?? 0) + 1, 999),
+            };
+          }),
+        ),
+      );
+
+      if (!isOwnMessage && isActiveChat && userSettings?.showReadReceipts !== false) {
+        activeSocket.emit("markAsRead", { chatId: message.chatId });
+      }
+
+      if (
+        !isOwnMessage &&
+        userSettings?.soundEnabled !== false &&
+        (!isActiveChat || !isWindowFocusedRef.current)
+      ) {
+        void playMessageSound();
+      }
+    }
+
+    activeSocket.on("chat:newMessage", handleChatNewMessage);
+
+    return () => {
+      activeSocket.off("chat:newMessage", handleChatNewMessage);
+    };
+  }, [currentUser?.id, userSettings?.showReadReceipts, userSettings?.soundEnabled]);
+
+  useEffect(() => {
     let isActive = true;
 
     async function loadChats() {
@@ -154,7 +319,7 @@ export default function ChatsPage() {
         const nextChats = await getChats();
 
         if (isActive) {
-          setChats(nextChats);
+          setChats(sortChatsByLastMessage(nextChats));
           setSelectedChat((current) =>
             current
               ? nextChats.find((chat) => chat.id === current.id) ?? current
@@ -245,7 +410,9 @@ export default function ChatsPage() {
 
         if (isActive) {
           setMessages(history);
-          socket?.emit("markAsRead", { chatId });
+          if (userSettings?.showReadReceipts !== false) {
+            socket?.emit("markAsRead", { chatId });
+          }
         }
       } catch {
         if (isActive) {
@@ -273,7 +440,9 @@ export default function ChatsPage() {
       });
 
       if (message.senderId !== currentUser?.id) {
-        socket?.emit("markAsRead", { chatId: selectedChat.id });
+        if (userSettings?.showReadReceipts !== false) {
+          socket?.emit("markAsRead", { chatId: selectedChat.id });
+        }
       }
     }
 
@@ -332,7 +501,7 @@ export default function ChatsPage() {
       socket?.off("userTyping:stop", handleTypingStop);
       socket?.off("connect_error");
     };
-  }, [currentUser?.id, selectedChat]);
+  }, [currentUser?.id, selectedChat, userSettings?.showReadReceipts]);
 
   function updateMessageReceipts(
     payload: ReceiptUpdate,
@@ -379,11 +548,12 @@ export default function ChatsPage() {
     try {
       const chat = await createPrivateChat(user.id);
       setSelectedChat(chat);
+      setIsMobileDrawerOpen(false);
       setQuery("");
       setResults([]);
       setChats((currentChats) => {
         const withoutChat = currentChats.filter((item) => item.id !== chat.id);
-        return [chat, ...withoutChat];
+        return sortChatsByLastMessage([chat, ...withoutChat]);
       });
     } catch {
       setError(ru.chats.errors.createChat);
@@ -460,6 +630,17 @@ export default function ChatsPage() {
 
     setSelectedChat(null);
     setMessageError(null);
+    setIsMobileDrawerOpen(true);
+  }
+
+  function handleSelectChat(chat: Chat) {
+    setSelectedChat(chat);
+    setIsMobileDrawerOpen(false);
+    setChats((currentChats) =>
+      currentChats.map((item) =>
+        item.id === chat.id ? { ...item, unreadCount: 0 } : item,
+      ),
+    );
   }
 
   function handleMessageTextChange(value: string) {
@@ -530,6 +711,8 @@ export default function ChatsPage() {
   async function handleLogout() {
     setIsLoggingOut(true);
     setError(null);
+    setIsUserMenuOpen(false);
+    setIsMobileDrawerOpen(false);
 
     try {
       await logout();
@@ -540,13 +723,71 @@ export default function ChatsPage() {
     }
   }
 
+  function handleProfileClick() {
+    setIsUserMenuOpen(false);
+    setIsMobileDrawerOpen(false);
+    router.push("/profile");
+  }
+
+  function handleSettingsClick() {
+    setIsUserMenuOpen(false);
+    setIsMobileDrawerOpen(false);
+    router.push("/settings");
+  }
+
+  function handleThemeClick() {
+    cycleTheme();
+    setIsUserMenuOpen(false);
+  }
+
+  function handleOpenProfile(username: string) {
+    router.push(`/profile/${encodeURIComponent(username)}`);
+  }
+
+  async function playMessageSound() {
+    if (!canPlayAudioRef.current) {
+      return;
+    }
+
+    const audio = messageAudioRef.current;
+
+    if (audio) {
+      try {
+        audio.currentTime = 0;
+        await audio.play();
+        return;
+      } catch {
+        playFallbackTone();
+        return;
+      }
+    }
+
+    playFallbackTone();
+  }
+
   return (
-    <main className="flex h-dvh min-h-dvh w-full overflow-hidden bg-[#0e1621] text-[#f5f8fb]">
-      <aside
+    <main className="flex h-dvh min-h-dvh w-full overflow-hidden bg-[var(--app-bg)] text-[var(--text-main)]">
+      <AnimatePresence>
+        {isMobile && isMobileDrawerOpen ? (
+          <motion.button
+            aria-label="Закрыть меню"
+            className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px] md:hidden"
+            exit={{ opacity: 0 }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            onClick={() => setIsMobileDrawerOpen(false)}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            type="button"
+          />
+        ) : null}
+      </AnimatePresence>
+      <motion.aside
         ref={sidebarRef}
-        className={`relative min-h-0 w-full flex-col border-r border-white/5 bg-[#17212b] md:flex md:shrink-0 ${
-          selectedChat ? "hidden" : "flex"
-        }`}
+        animate={{
+          x: isMobile && selectedChat && !isMobileDrawerOpen ? "-100%" : "0%",
+        }}
+        className="fixed inset-y-0 left-0 z-50 flex min-h-0 w-full flex-col border-r border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/25 md:relative md:z-auto md:flex md:shrink-0 md:shadow-none"
+        initial={false}
         style={
           isMobile === false
             ? {
@@ -554,11 +795,18 @@ export default function ChatsPage() {
                 minWidth: sidebarWidth,
                 maxWidth: sidebarWidth,
               }
-            : undefined
+            : isMobile === true
+              ? {
+                  width: selectedChat ? "min(86vw, 340px)" : "100vw",
+                  minWidth: selectedChat ? "min(86vw, 340px)" : "100vw",
+                  maxWidth: selectedChat ? "min(86vw, 340px)" : "100vw",
+                }
+              : undefined
         }
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       >
         <header
-          className={`border-b border-white/5 py-4 ${
+          className={`border-b border-[var(--border-soft)] py-4 ${
             isCompactSidebar ? "px-3" : "px-4"
           }`}
         >
@@ -567,59 +815,72 @@ export default function ChatsPage() {
               isCompactSidebar ? "justify-center" : "gap-3"
             }`}
           >
-            <label
-              className={`group relative block shrink-0 rounded-full outline-none ${
-                isUploadingAvatar
-                  ? "cursor-wait opacity-70"
-                  : "cursor-pointer focus-within:ring-2 focus-within:ring-[#2aabee]/40"
-            }`}
-              title={ru.chats.uploadAvatar}
-            >
-              <input
-                accept="image/jpeg,image/png,image/webp"
-                className="sr-only"
+            <input
+              ref={profileFileInputRef}
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              disabled={isUploadingAvatar}
+              onChange={handleAvatarChange}
+              type="file"
+            />
+            <div ref={userMenuRef} className="relative shrink-0">
+              <button
+                aria-expanded={isUserMenuOpen}
+                aria-haspopup="menu"
+                className="block rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-wait disabled:opacity-70"
                 disabled={isUploadingAvatar}
-                onChange={handleAvatarChange}
-                type="file"
-              />
-              <Avatar
-                avatarUrl={currentUser?.avatarUrl ?? null}
-                label={getUserLabel(currentUser)}
-              />
-              <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100">
-                {isUploadingAvatar ? "..." : ru.chats.editAvatar}
-              </span>
-            </label>
+                onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
+                title="Открыть меню"
+                type="button"
+              >
+                <Avatar
+                  avatarUrl={currentUser?.avatarUrl ?? null}
+                  label={getUserLabel(currentUser)}
+                />
+              </button>
+              <AnimatePresence>
+                {isUserMenuOpen ? (
+                  <UserMenu
+                    isLoggingOut={isLoggingOut}
+                  onLogout={handleLogout}
+                  onProfile={handleProfileClick}
+                  onSettings={handleSettingsClick}
+                  onTheme={handleThemeClick}
+                    theme={theme}
+                  />
+                ) : null}
+              </AnimatePresence>
+            </div>
             <div className={`min-w-0 ${isCompactSidebar ? "hidden" : "block"}`}>
-              <p className="truncate text-[15px] font-semibold text-white">
-                {currentUser?.displayName || currentUser?.username || "Linka"}
+              <p className="truncate text-[15px] font-semibold text-[var(--text-main)]">
+                {currentUser ? getUserDisplayName(currentUser) : "Linka"}
               </p>
-              <p className="truncate text-sm text-[#8fa3b5]">
+              <p className="truncate text-sm text-[var(--text-muted)]">
                 @{currentUser?.username ?? ru.chats.loadingProfile}
               </p>
             </div>
+            {isMobile ? (
+              <button
+                aria-label="Закрыть меню"
+                className="ml-auto flex h-9 w-9 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] md:hidden"
+                onClick={() => setIsMobileDrawerOpen(false)}
+                type="button"
+              >
+                <X size={20} />
+              </button>
+            ) : null}
           </div>
           {avatarError && !isCompactSidebar ? (
-            <p className="mt-3 text-sm text-red-200">{avatarError}</p>
-          ) : null}
-          {!isCompactSidebar ? (
-            <button
-              className="mt-3 h-9 rounded-md px-3 text-sm font-medium text-[#8fa3b5] transition hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={isLoggingOut}
-              onClick={handleLogout}
-              type="button"
-            >
-              {isLoggingOut ? ru.auth.loggingOut : ru.auth.logout}
-            </button>
+            <p className="mt-3 text-sm text-[var(--danger)]">{avatarError}</p>
           ) : null}
         </header>
 
         {isCompactSidebar ? null : (
-          <div className="border-b border-white/5 px-4 py-3">
+          <div className="border-b border-[var(--border-soft)] px-4 py-3">
             <label className="block">
               <span className="sr-only">{ru.chats.searchUsers}</span>
               <input
-                className="h-11 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+                className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -645,7 +906,8 @@ export default function ChatsPage() {
               chats={chats}
               compact={isCompactSidebar}
               isLoading={isLoadingChats}
-              onSelectChat={setSelectedChat}
+              messagePreviewEnabled={userSettings?.messagePreviewEnabled !== false}
+              onSelectChat={handleSelectChat}
               selectedChatId={selectedChat?.id ?? null}
             />
           )}
@@ -654,14 +916,14 @@ export default function ChatsPage() {
         <button
           aria-label={ru.chats.resizeSidebar}
           className={`absolute -right-[5px] top-0 z-10 hidden h-full w-[10px] cursor-col-resize items-center justify-center md:flex ${
-            isResizingSidebar ? "bg-[#2aabee]/10" : "bg-transparent"
+            isResizingSidebar ? "bg-[var(--accent)]/10" : "bg-transparent"
           }`}
           onPointerDown={handleSidebarResizeStart}
           type="button"
         >
-          <span className="h-12 w-[2px] rounded-full bg-white/10 transition" />
+          <span className="h-12 w-[2px] rounded-full bg-[var(--border-soft)] transition" />
         </button>
-      </aside>
+      </motion.aside>
 
       <ChatArea
         currentUserId={currentUser?.id ?? null}
@@ -672,8 +934,11 @@ export default function ChatsPage() {
         messageText={messageText}
         messages={messages}
         messagesEndRef={messagesEndRef}
+        isMobile={isMobile === true}
         onBackToChats={handleBackToChats}
         onMediaChange={handleMediaChange}
+        onOpenMenu={() => setIsMobileDrawerOpen(true)}
+        onOpenProfile={handleOpenProfile}
         onMessageTextChange={handleMessageTextChange}
         onSendMessage={handleSendMessage}
         selectedChat={selectedChat}
@@ -683,21 +948,102 @@ export default function ChatsPage() {
   );
 }
 
+function UserMenu({
+  isLoggingOut,
+  onLogout,
+  onProfile,
+  onSettings,
+  onTheme,
+  theme,
+}: {
+  isLoggingOut: boolean;
+  onLogout: () => void;
+  onProfile: () => void;
+  onSettings: () => void;
+  onTheme: () => void;
+  theme: ThemeMode;
+}) {
+  return (
+    <motion.div
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-56 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
+      exit={{ opacity: 0, scale: 0.98, y: -6 }}
+      initial={{ opacity: 0, scale: 0.98, y: -6 }}
+      role="menu"
+      transition={{ duration: 0.16, ease: "easeOut" }}
+    >
+      <MenuButton icon={<User size={18} />} onClick={onProfile}>
+        Профиль
+      </MenuButton>
+      <MenuButton icon={<Settings size={18} />} onClick={onSettings}>
+        Настройки
+      </MenuButton>
+      <MenuButton icon={getThemeIcon(theme)} onClick={onTheme}>
+        Сменить тему
+        <span className="ml-auto text-xs text-[var(--text-muted)]">
+          {getThemeLabel(theme)}
+        </span>
+      </MenuButton>
+      <MenuButton
+        disabled={isLoggingOut}
+        icon={<LogOut size={18} />}
+        onClick={onLogout}
+        tone="danger"
+      >
+        {isLoggingOut ? ru.auth.loggingOut : "Выйти"}
+      </MenuButton>
+    </motion.div>
+  );
+}
+
+function MenuButton({
+  children,
+  disabled = false,
+  icon,
+  onClick,
+  tone = "default",
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  icon: React.ReactNode;
+  onClick: () => void;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <button
+      className={`flex h-11 w-full items-center gap-3 px-3 text-left text-sm transition hover:bg-[var(--hover-soft)] disabled:cursor-not-allowed disabled:opacity-60 ${
+        tone === "danger" ? "text-[var(--danger)]" : "text-[var(--text-main)]"
+      }`}
+      disabled={disabled}
+      onClick={onClick}
+      role="menuitem"
+      type="button"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--input-bg)] text-[var(--text-muted)]">
+        {icon}
+      </span>
+      {children}
+    </button>
+  );
+}
+
 function ChatList({
   chats,
   compact,
   isLoading,
+  messagePreviewEnabled,
   onSelectChat,
   selectedChatId,
 }: {
   chats: Chat[];
   compact: boolean;
   isLoading: boolean;
+  messagePreviewEnabled: boolean;
   onSelectChat: (chat: Chat) => void;
   selectedChatId: string | null;
 }) {
   if (isLoading) {
-    return <StateMessage>{ru.chats.loadingChats}</StateMessage>;
+    return <ChatListSkeleton compact={compact} />;
   }
 
   if (!chats.length) {
@@ -705,14 +1051,14 @@ function ChatList({
   }
 
   return (
-    <ul className="divide-y divide-white/5">
+    <ul className="divide-y divide-[var(--border-soft)]">
       {chats.map((chat) => (
         <li key={chat.id}>
           <button
-            className={`flex w-full items-center px-4 py-3 text-left transition ${
+            className={`flex w-full items-center px-4 py-3 text-left transition duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30 ${
               selectedChatId === chat.id
-                ? "bg-[#2aabee]/15"
-                : "hover:bg-white/[0.03]"
+                ? "bg-[var(--active-soft)]"
+                : "hover:bg-[var(--hover-soft)]"
             } ${compact ? "justify-center px-3" : "gap-3"}`}
             onClick={() => onSelectChat(chat)}
             type="button"
@@ -720,20 +1066,67 @@ function ChatList({
           >
             <Avatar
               avatarUrl={chat.partner?.avatarUrl ?? null}
-              label={chat.partner?.displayName || chat.partner?.username || ru.chats.privateChat}
+              label={chat.partner ? getUserDisplayName(chat.partner) : ru.chats.privateChat}
             />
             <div className={`min-w-0 ${compact ? "hidden" : "block"}`}>
-              <p className="truncate text-[15px] font-medium text-white">
-                {chat.partner?.displayName || chat.partner?.username || ru.chats.privateChat}
-              </p>
-              <p className="truncate text-sm text-[#8fa3b5]">
-                {chat.partner ? `@${chat.partner.username}` : ru.chats.noParticipant}
-              </p>
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--text-main)]">
+                  {chat.partner ? getUserDisplayName(chat.partner) : ru.chats.privateChat}
+                </p>
+                {chat.lastMessageAt ? (
+                  <span className="shrink-0 text-xs text-[var(--text-muted)]">
+                    {formatChatListTime(chat.lastMessageAt)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-0.5 flex min-w-0 items-center gap-2">
+                <p className="min-w-0 flex-1 truncate text-sm text-[var(--text-muted)]">
+                  {formatLastMessagePreview(chat, messagePreviewEnabled)}
+                </p>
+                {chat.unreadCount > 0 ? (
+                  <UnreadBadge count={chat.unreadCount} />
+                ) : null}
+              </div>
             </div>
           </button>
         </li>
       ))}
     </ul>
+  );
+}
+
+function ChatListSkeleton({
+  compact,
+  rows = 7,
+}: {
+  compact: boolean;
+  rows?: number;
+}) {
+  return (
+    <div className="divide-y divide-[var(--border-soft)]">
+      {Array.from({ length: rows }).map((_, index) => (
+        <div
+          className={`flex items-center px-4 py-3 ${compact ? "justify-center px-3" : "gap-3"}`}
+          key={index}
+        >
+          <div className="h-11 w-11 shrink-0 animate-pulse rounded-full bg-[var(--input-bg)]" />
+          {compact ? null : (
+            <div className="min-w-0 flex-1 space-y-2">
+              <div className="h-3.5 w-2/3 animate-pulse rounded-full bg-[var(--input-bg)]" />
+              <div className="h-3 w-1/2 animate-pulse rounded-full bg-[var(--input-bg)]" />
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function UnreadBadge({ count }: { count: number }) {
+  return (
+    <span className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[11px] font-semibold leading-none text-white shadow-sm">
+      {count > 99 ? "99+" : count}
+    </span>
   );
 }
 
@@ -753,7 +1146,7 @@ function SearchResults({
   results: AuthUser[];
 }) {
   if (isSearching) {
-    return <StateMessage>{ru.chats.searching}</StateMessage>;
+    return <ChatListSkeleton compact={compact} rows={3} />;
   }
 
   if (error) {
@@ -765,11 +1158,11 @@ function SearchResults({
   }
 
   return (
-    <ul className="divide-y divide-white/5">
+    <ul className="divide-y divide-[var(--border-soft)]">
       {results.map((user) => (
         <li key={user.id}>
           <button
-            className={`flex w-full items-center px-4 py-3 text-left transition hover:bg-white/[0.03] disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`flex w-full items-center px-4 py-3 text-left transition duration-150 hover:bg-[var(--hover-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30 disabled:cursor-not-allowed disabled:opacity-60 ${
               compact ? "justify-center px-3" : "gap-3"
             }`}
             disabled={pendingUserId === user.id}
@@ -779,13 +1172,13 @@ function SearchResults({
           >
             <Avatar
               avatarUrl={user.avatarUrl}
-              label={user.displayName || user.username}
+              label={getUserDisplayName(user)}
             />
             <div className={`min-w-0 ${compact ? "hidden" : "block"}`}>
-              <p className="truncate text-[15px] font-medium text-white">
-                {user.displayName || user.username}
+              <p className="truncate text-[15px] font-medium text-[var(--text-main)]">
+                {getUserDisplayName(user)}
               </p>
-              <p className="truncate text-sm text-[#8fa3b5]">
+              <p className="truncate text-sm text-[var(--text-muted)]">
                 {pendingUserId === user.id ? ru.chats.openingChat : `@${user.username}`}
               </p>
             </div>
@@ -799,6 +1192,7 @@ function SearchResults({
 function ChatArea({
   currentUserId,
   isLoadingMessages,
+  isMobile,
   isSending,
   isUploadingMedia,
   messageError,
@@ -807,6 +1201,8 @@ function ChatArea({
   messagesEndRef,
   onBackToChats,
   onMediaChange,
+  onOpenMenu,
+  onOpenProfile,
   onMessageTextChange,
   onSendMessage,
   selectedChat,
@@ -814,6 +1210,7 @@ function ChatArea({
 }: {
   currentUserId: string | null;
   isLoadingMessages: boolean;
+  isMobile: boolean;
   isSending: boolean;
   isUploadingMedia: boolean;
   messageError: string | null;
@@ -822,6 +1219,8 @@ function ChatArea({
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   onBackToChats: () => void;
   onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onOpenMenu: () => void;
+  onOpenProfile: (username: string) => void;
   onMessageTextChange: (value: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
   selectedChat: Chat | null;
@@ -830,79 +1229,131 @@ function ChatArea({
   const typingText = getTypingText(typingUsers);
 
   return (
-    <section
-      className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[#0e1621] md:flex ${
+    <motion.section
+      className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)] md:flex ${
         selectedChat ? "flex" : "hidden"
       }`}
+      initial={false}
     >
       {selectedChat?.partner ? (
-        <>
-          <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-white/5 bg-[#17212b] px-3 md:h-[73px] md:px-5">
+        <motion.div
+          animate={{ opacity: 1, x: 0 }}
+          className="flex h-full min-h-0 flex-col"
+          initial={isMobile ? { opacity: 0.96, x: 32 } : { opacity: 1, x: 0 }}
+          key={selectedChat.id}
+          transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+        >
+          <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 md:h-[73px] md:px-5">
+            <button
+              aria-label="Открыть меню"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] md:hidden"
+              onClick={onOpenMenu}
+              type="button"
+            >
+              <Menu size={22} />
+            </button>
             <button
               aria-label={ru.chats.backToChats}
-              className="flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-[15px] font-medium text-[#2aabee] transition hover:bg-white/[0.04] md:hidden"
+              className="flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-[15px] font-medium text-[var(--accent)] transition hover:bg-[var(--hover-soft)] md:hidden"
               onClick={onBackToChats}
               type="button"
             >
               <span aria-hidden="true">{"<"}</span>
               <span>{ru.chats.back}</span>
             </button>
-            <Avatar
-              avatarUrl={selectedChat.partner.avatarUrl}
-              label={selectedChat.partner.displayName || selectedChat.partner.username}
-            />
-            <div className="min-w-0">
-              <p className="truncate text-[15px] font-semibold text-white">
-                {selectedChat.partner.displayName || selectedChat.partner.username}
-              </p>
-              <p className="truncate text-sm text-[#8fa3b5]">
-                {typingText ?? `@${selectedChat.partner.username}`}
-              </p>
-            </div>
+            <button
+              className="flex min-w-0 items-center gap-3 rounded-md text-left transition hover:bg-[var(--hover-soft)]"
+              onClick={() => {
+                if (selectedChat.partner) {
+                  onOpenProfile(selectedChat.partner.username);
+                }
+              }}
+              title={`@${selectedChat.partner.username}`}
+              type="button"
+            >
+              <Avatar
+                avatarUrl={selectedChat.partner.avatarUrl}
+                label={getUserDisplayName(selectedChat.partner)}
+              />
+              <div className="min-w-0">
+                <p className="truncate text-[15px] font-semibold text-[var(--text-main)]">
+                  {getUserDisplayName(selectedChat.partner)}
+                </p>
+                <p className="truncate text-sm text-[var(--text-muted)]">
+                  {typingText ?? `@${selectedChat.partner.username}`}
+                </p>
+              </div>
+            </button>
           </header>
 
           <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 md:px-5 md:py-5">
             {isLoadingMessages ? (
-              <StateMessage>{ru.chats.loadingMessages}</StateMessage>
+              <MessageSkeleton />
             ) : messages.length ? (
-              <div className="space-y-2">
-                {messages.map((message) => (
-                  <MessageBubble
-                    isOwn={message.senderId === currentUserId}
-                    key={message.id}
-                    message={message}
-                  />
-                ))}
+              <div className="space-y-1.5">
+                <AnimatePresence initial={false}>
+                  {messages.map((message, index) => {
+                    const previousMessage = messages[index - 1];
+                    const showDateSeparator =
+                      !previousMessage ||
+                      !isSameMessageDay(previousMessage.createdAt, message.createdAt);
+
+                    return (
+                      <motion.div
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        initial={{ opacity: 0, y: 8, scale: 0.99 }}
+                        key={message.id}
+                        layout
+                        transition={{ duration: 0.18, ease: "easeOut" }}
+                      >
+                        {showDateSeparator ? (
+                          <DateSeparator value={message.createdAt} />
+                        ) : null}
+                        <MessageBubble
+                          isOwn={message.senderId === currentUserId}
+                          message={message}
+                        />
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
                 <div ref={messagesEndRef} />
               </div>
             ) : (
               <div className="flex h-full items-center justify-center text-center">
-                <div>
-                  <h1 className="text-2xl font-semibold text-white">
+                <motion.div
+                  animate={{ opacity: 1, y: 0 }}
+                  initial={{ opacity: 0, y: 8 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--panel-bg)] text-2xl font-semibold text-[var(--accent)]">
+                    {getUserDisplayName(selectedChat.partner).slice(0, 1).toUpperCase()}
+                  </div>
+                  <h1 className="text-xl font-semibold text-[var(--text-main)] md:text-2xl">
                     {ru.chats.chatWith(selectedChat.partner.username)}
                   </h1>
-                  <p className="mt-2 max-w-sm text-sm text-[#8fa3b5]">
+                  <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
                     {ru.chats.firstMessageHint}
                   </p>
                   <div ref={messagesEndRef} />
-                </div>
+                </motion.div>
               </div>
             )}
           </div>
 
           <form
-            className="shrink-0 border-t border-white/5 bg-[#17212b] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
+            className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
             onSubmit={onSendMessage}
           >
             {messageError ? (
-              <p className="mb-2 text-sm text-red-200">{messageError}</p>
+              <p className="mb-2 text-sm text-[var(--danger)]">{messageError}</p>
             ) : null}
             {isUploadingMedia ? (
-              <p className="mb-2 text-sm text-[#8fa3b5]">{ru.chats.uploading}</p>
+              <p className="mb-2 text-sm text-[var(--text-muted)]">{ru.chats.uploading}</p>
             ) : null}
             <div className="flex min-w-0 items-end gap-2 md:gap-3">
               <label
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-white/5 bg-[#242f3d] text-xl font-semibold text-[#2aabee] transition hover:bg-white/[0.04] ${
+                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-xl font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)] ${
                   isUploadingMedia ? "cursor-wait opacity-60" : "cursor-pointer"
                 }`}
                 title={ru.chats.attachFile}
@@ -917,7 +1368,7 @@ function ChatArea({
                 <span aria-hidden="true">+</span>
               </label>
               <textarea
-                className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-white/5 bg-[#242f3d] px-4 py-3 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+                className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
                 onChange={(event) => onMessageTextChange(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -929,7 +1380,7 @@ function ChatArea({
                 value={messageText}
               />
               <button
-                className="h-11 shrink-0 rounded-md bg-[#2aabee] px-4 text-[15px] font-semibold text-white transition hover:bg-[#239bd8] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
+                className="h-11 shrink-0 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
                 disabled={isSending || isUploadingMedia || !messageText.trim()}
                 type="submit"
               >
@@ -937,23 +1388,52 @@ function ChatArea({
               </button>
             </div>
           </form>
-        </>
+        </motion.div>
       ) : (
         <div className="flex flex-1 items-center justify-center px-6 text-center">
           <div>
-            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[#17212b] text-2xl font-semibold text-[#2aabee]">
+            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--panel-bg)] text-2xl font-semibold text-[var(--accent)]">
               L
             </div>
-            <h1 className="text-2xl font-semibold text-white">
+            <h1 className="text-2xl font-semibold text-[var(--text-main)]">
               {ru.chats.chooseChat}
             </h1>
-            <p className="mt-2 max-w-sm text-sm text-[#8fa3b5]">
+            <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
               {ru.chats.chooseChatHint}
             </p>
           </div>
         </div>
       )}
-    </section>
+    </motion.section>
+  );
+}
+
+function MessageSkeleton() {
+  return (
+    <div className="space-y-3">
+      {[
+        "mr-auto w-[68%]",
+        "ml-auto w-[56%]",
+        "mr-auto w-[48%]",
+        "ml-auto w-[72%]",
+      ].map((widthClass, index) => (
+        <div className={`flex ${widthClass.startsWith("ml") ? "justify-end" : "justify-start"}`} key={index}>
+          <div
+            className={`h-16 animate-pulse rounded-2xl bg-[var(--panel-bg)] ${widthClass}`}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DateSeparator({ value }: { value: string }) {
+  return (
+    <div className="sticky top-2 z-[1] my-3 flex justify-center">
+      <span className="rounded-full border border-[var(--border-soft)] bg-[var(--panel-elevated)]/90 px-3 py-1 text-xs font-medium text-[var(--text-muted)] shadow-sm backdrop-blur">
+        {formatMessageDate(value)}
+      </span>
+    </div>
   );
 }
 
@@ -967,8 +1447,10 @@ function MessageBubble({
   return (
     <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[85%] rounded-lg px-3 py-2 text-[15px] shadow-sm md:max-w-[70%] ${
-          isOwn ? "bg-[#2aabee] text-white" : "bg-[#17212b] text-[#f5f8fb]"
+        className={`max-w-[86%] px-3 py-2 text-[15px] leading-5 shadow-sm md:max-w-[68%] ${
+          isOwn
+            ? "rounded-2xl rounded-br-md bg-[var(--accent)] text-white"
+            : "rounded-2xl rounded-bl-md border border-[var(--border-soft)] bg-[var(--panel-bg)] text-[var(--text-main)]"
         }`}
       >
         <MessageMedia message={message} />
@@ -977,7 +1459,7 @@ function MessageBubble({
         ) : null}
         <p
           className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${
-            isOwn ? "text-white/75" : "text-[#8fa3b5]"
+            isOwn ? "text-white/75" : "text-[var(--text-muted)]"
           }`}
         >
           <span>{formatMessageTime(message.createdAt)}</span>
@@ -1040,12 +1522,12 @@ function MessageMedia({ message }: { message: Message }) {
 
   return (
     <a
-      className="mb-2 flex max-w-[280px] items-center gap-3 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-white transition hover:bg-black/20"
+      className="mb-2 flex max-w-[280px] items-center gap-3 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-[var(--text-main)] transition hover:bg-black/20"
       href={url}
       rel="noreferrer"
       target="_blank"
     >
-      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#2aabee]/20 text-xs font-semibold text-white">
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[var(--accent)]/20 text-xs font-semibold text-[var(--text-main)]">
         PDF
       </span>
       <span className="min-w-0">
@@ -1066,7 +1548,7 @@ function Avatar({
   label: string;
 }) {
   return (
-    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[#242f3d] text-sm font-semibold text-[#2aabee]">
+    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-sm font-semibold text-[var(--accent)]">
       {avatarUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -1092,8 +1574,8 @@ function StateMessage({
     <div
       className={
         tone === "error"
-          ? "px-4 py-8 text-center text-sm text-red-200"
-          : "px-4 py-8 text-center text-sm text-[#8fa3b5]"
+          ? "px-4 py-8 text-center text-sm text-[var(--danger)]"
+          : "px-4 py-8 text-center text-sm text-[var(--text-muted)]"
       }
     >
       {children}
@@ -1102,7 +1584,127 @@ function StateMessage({
 }
 
 function getUserLabel(user: AuthUser | null) {
-  return user?.displayName || user?.username || "Linka";
+  return user ? getUserDisplayName(user) : "Linka";
+}
+
+function getUserDisplayName(user: {
+  displayName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  username: string;
+  nameEmoji?: string | null;
+}) {
+  const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ");
+  const name = user.displayName || fullName || user.username;
+  return [user.nameEmoji, name].filter(Boolean).join(" ");
+}
+
+function sortChatsByLastMessage(chats: Chat[]) {
+  return [...chats].sort((left, right) => {
+    const leftTime = left.lastMessageAt ?? left.updatedAt;
+    const rightTime = right.lastMessageAt ?? right.updatedAt;
+
+    return new Date(rightTime).getTime() - new Date(leftTime).getTime();
+  });
+}
+
+function formatLastMessagePreview(chat: Chat, messagePreviewEnabled: boolean) {
+  if (!chat.lastMessage) {
+    return chat.partner ? `@${chat.partner.username}` : ru.chats.noParticipant;
+  }
+
+  if (!messagePreviewEnabled) {
+    return "Новое сообщение";
+  }
+
+  if (chat.lastMessage.text?.trim()) {
+    return chat.lastMessage.text.trim();
+  }
+
+  if (chat.lastMessage.mediaType === "image") {
+    return "Фото";
+  }
+
+  if (chat.lastMessage.mediaType === "video") {
+    return "Видео";
+  }
+
+  if (chat.lastMessage.mediaType === "audio") {
+    return "Аудио";
+  }
+
+  if (chat.lastMessage.mediaType === "document") {
+    return "Документ";
+  }
+
+  return "Сообщение";
+}
+
+function formatChatListTime(value: string) {
+  const date = new Date(value);
+
+  if (isSameMessageDay(value, new Date().toISOString())) {
+    return formatMessageTime(value);
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+  }).format(date);
+}
+
+function playFallbackTone() {
+  const AudioContextConstructor =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+
+  if (!AudioContextConstructor) {
+    return;
+  }
+
+  const audioContext = new AudioContextConstructor();
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(740, audioContext.currentTime);
+  oscillator.frequency.exponentialRampToValueAtTime(
+    520,
+    audioContext.currentTime + 0.12,
+  );
+  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.08, audioContext.currentTime + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 0.16);
+
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start();
+  oscillator.stop(audioContext.currentTime + 0.17);
+}
+
+function getThemeLabel(theme: ThemeMode) {
+  if (theme === "light") {
+    return "Light";
+  }
+
+  if (theme === "dark") {
+    return "Dark";
+  }
+
+  return "System";
+}
+
+function getThemeIcon(theme: ThemeMode) {
+  if (theme === "light") {
+    return <Sun size={18} />;
+  }
+
+  if (theme === "dark") {
+    return <Moon size={18} />;
+  }
+
+  return <Monitor size={18} />;
 }
 
 function formatMessageTime(value: string) {
@@ -1110,6 +1712,37 @@ function formatMessageTime(value: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatMessageDate(value: string) {
+  const date = new Date(value);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+
+  if (isSameMessageDay(value, today.toISOString())) {
+    return "Сегодня";
+  }
+
+  if (isSameMessageDay(value, yesterday.toISOString())) {
+    return "Вчера";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    day: "numeric",
+    month: "long",
+  }).format(date);
+}
+
+function isSameMessageDay(left: string, right: string) {
+  const leftDate = new Date(left);
+  const rightDate = new Date(right);
+
+  return (
+    leftDate.getFullYear() === rightDate.getFullYear() &&
+    leftDate.getMonth() === rightDate.getMonth() &&
+    leftDate.getDate() === rightDate.getDate()
+  );
 }
 
 function getMessageStatus(message: Message) {

@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Req, Res, UseGuards } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+} from "@nestjs/common";
 import { Request, Response } from "express";
 import { AuthService, REFRESH_TOKEN_COOKIE } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
@@ -61,6 +70,11 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   async me(@Req() request: AuthenticatedRequest) {
     return this.authService.getMe(request.user.id);
+  }
+
+  @Get("username-available")
+  async usernameAvailable(@Query("username") username?: string) {
+    return this.authService.isUsernameAvailable(username ?? "");
   }
 
   private setRefreshCookie(

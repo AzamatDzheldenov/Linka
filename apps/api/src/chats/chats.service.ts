@@ -17,6 +17,22 @@ type ChatWithMembers = {
       id: string;
       username: string;
       displayName: string | null;
+      nameEmoji: string | null;
+      avatarUrl: string | null;
+    };
+  }>;
+  messages: Array<{
+    id: string;
+    text: string | null;
+    mediaUrl: string | null;
+    mediaType: string | null;
+    createdAt: Date;
+    senderId: string;
+    sender: {
+      id: string;
+      username: string;
+      displayName: string | null;
+      nameEmoji: string | null;
       avatarUrl: string | null;
     };
   }>;
@@ -76,9 +92,22 @@ export class ChatsService {
       },
     });
 
-    return memberships.map((membership) =>
-      this.toChatResponse(membership.chat, currentUserId),
+    const chats = await Promise.all(
+      memberships.map((membership) =>
+        this.toChatResponse(membership.chat, currentUserId),
+      ),
     );
+
+    return chats.sort((left, right) => {
+      const leftTime = left.lastMessageAt
+        ? new Date(left.lastMessageAt).getTime()
+        : new Date(left.updatedAt).getTime();
+      const rightTime = right.lastMessageAt
+        ? new Date(right.lastMessageAt).getTime()
+        : new Date(right.updatedAt).getTime();
+
+      return rightTime - leftTime;
+    });
   }
 
   private findPrivateChat(currentUserId: string, targetUserId: string) {
@@ -94,10 +123,22 @@ export class ChatsService {
     });
   }
 
-  private toChatResponse(chat: ChatWithMembers, currentUserId: string) {
+  private async toChatResponse(chat: ChatWithMembers, currentUserId: string) {
     const partner = chat.members.find(
       (member) => member.userId !== currentUserId,
     )?.user;
+    const lastMessage = chat.messages[0] ?? null;
+    const unreadCount = await this.prisma.messageReceipt.count({
+      where: {
+        userId: currentUserId,
+        readAt: null,
+        message: {
+          chatId: chat.id,
+          senderId: { not: currentUserId },
+          deletedAt: null,
+        },
+      },
+    });
 
     return {
       id: chat.id,
@@ -105,11 +146,25 @@ export class ChatsService {
       title: chat.title,
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
+      unreadCount,
+      lastMessageAt: lastMessage?.createdAt ?? null,
+      lastMessage: lastMessage
+        ? {
+            id: lastMessage.id,
+            text: lastMessage.text,
+            mediaUrl: lastMessage.mediaUrl,
+            mediaType: lastMessage.mediaType,
+            createdAt: lastMessage.createdAt,
+            senderId: lastMessage.senderId,
+            sender: lastMessage.sender,
+          }
+        : null,
       partner: partner
         ? {
             id: partner.id,
             username: partner.username,
             displayName: partner.displayName,
+            nameEmoji: partner.nameEmoji,
             avatarUrl: partner.avatarUrl,
           }
         : null,
@@ -125,6 +180,28 @@ export class ChatsService {
               id: true,
               username: true,
               displayName: true,
+              nameEmoji: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      },
+      messages: {
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        select: {
+          id: true,
+          text: true,
+          mediaUrl: true,
+          mediaType: true,
+          createdAt: true,
+          senderId: true,
+          sender: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              nameEmoji: true,
               avatarUrl: true,
             },
           },

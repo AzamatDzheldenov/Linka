@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { config } from "dotenv";
 import {
   BadRequestException,
   ValidationError,
@@ -9,6 +9,8 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
 import { join } from "path";
 import { AppModule } from "./app.module";
+
+config();
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);

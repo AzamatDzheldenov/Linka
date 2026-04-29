@@ -4,6 +4,7 @@ export type MessageSender = {
   id: string;
   username: string;
   displayName: string | null;
+  nameEmoji: string | null;
   avatarUrl: string | null;
 };
 

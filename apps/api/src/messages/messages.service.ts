@@ -119,6 +119,15 @@ export class MessagesService {
     return this.markReceipts(userId, chatId, "read");
   }
 
+  async getChatMemberIds(chatId: string) {
+    const members = await this.prisma.chatMember.findMany({
+      where: { chatId },
+      select: { userId: true },
+    });
+
+    return members.map((member) => member.userId);
+  }
+
   async assertChatMember(userId: string, chatId: string) {
     const membership = await this.prisma.chatMember.findUnique({
       where: {
@@ -149,6 +158,7 @@ export class MessagesService {
             id: true,
             username: true,
             displayName: true,
+            nameEmoji: true,
           },
         },
       },
@@ -167,6 +177,9 @@ export class MessagesService {
     status: "delivered" | "read",
   ): Promise<MessageReceiptUpdate[]> {
     await this.assertChatMember(userId, chatId);
+
+    const shouldEmitReadReceipts =
+      status !== "read" || (await this.shouldEmitReadReceipts(userId));
 
     const pendingReceipts = await this.prisma.messageReceipt.findMany({
       where: {
@@ -225,7 +238,16 @@ export class MessagesService {
       updates.set(senderId, currentUpdate);
     });
 
-    return [...updates.values()];
+    return shouldEmitReadReceipts ? [...updates.values()] : [];
+  }
+
+  private async shouldEmitReadReceipts(userId: string) {
+    const settings = await this.prisma.userSettings.findUnique({
+      where: { userId },
+      select: { showReadReceipts: true },
+    });
+
+    return settings?.showReadReceipts !== false;
   }
 
   private async getReceiptRecipientIds(chatId: string, senderId: string) {
@@ -257,6 +279,7 @@ export class MessagesService {
           id: true,
           username: true,
           displayName: true,
+          nameEmoji: true,
           avatarUrl: true,
         },
       },

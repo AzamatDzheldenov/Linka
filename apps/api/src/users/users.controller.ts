@@ -3,6 +3,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Patch,
   Post,
   Query,
@@ -19,6 +20,7 @@ import { diskStorage } from "multer";
 import { join } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { UpdateMeDto } from "./dto/update-me.dto";
+import { UpdateUserSettingsDto } from "./dto/update-user-settings.dto";
 import { UsersService } from "./users.service";
 
 const AVATAR_UPLOAD_DIR = join(__dirname, "..", "..", "uploads", "avatars");
@@ -52,6 +54,19 @@ export class UsersController {
   @Patch("me")
   updateMe(@Req() request: AuthenticatedRequest, @Body() dto: UpdateMeDto) {
     return this.usersService.updateMe(request.user.id, dto);
+  }
+
+  @Get("me/settings")
+  getSettings(@Req() request: AuthenticatedRequest) {
+    return this.usersService.getSettings(request.user.id);
+  }
+
+  @Patch("me/settings")
+  updateSettings(
+    @Req() request: AuthenticatedRequest,
+    @Body() dto: UpdateUserSettingsDto,
+  ) {
+    return this.usersService.updateSettings(request.user.id, dto);
   }
 
   @Post("me/avatar")
@@ -102,6 +117,11 @@ export class UsersController {
     @Query("q") query?: string,
   ) {
     return this.usersService.searchUsers(request.user.id, query);
+  }
+
+  @Get(":username")
+  getProfileByUsername(@Param("username") username: string) {
+    return this.usersService.getProfileByUsername(username);
   }
 }
 

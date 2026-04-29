@@ -14,8 +14,9 @@
     "strict": true,
     "strictPropertyInitialization": false,
     "skipLibCheck": true,
-    "esModuleInterop": true
+    "esModuleInterop": true,
+    "typeRoots": ["./node_modules/@types", "./node_modules/.prisma/client"]
   },
   "include": ["src/**/*.ts"],
-"exclude": ["prisma.config.ts", "**/*.config.ts", "node_modules", "dist"]
+  "exclude": ["prisma.config.ts", "**/*.config.ts", "node_modules", "dist"]
 }

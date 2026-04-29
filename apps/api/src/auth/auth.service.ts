@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   UnauthorizedException,
@@ -14,9 +15,13 @@ export const REFRESH_TOKEN_COOKIE = "refreshToken";
 
 type AuthUser = {
   id: string;
+  firstName: string;
+  lastName: string | null;
   username: string;
   email: string;
   displayName: string | null;
+  bio: string | null;
+  nameEmoji: string | null;
   avatarUrl: string | null;
   createdAt: Date;
 };
@@ -43,8 +48,19 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
-    const username = dto.username.trim();
+    const firstName = dto.firstName.trim();
+    const lastName = dto.lastName?.trim() || null;
+    const nameEmoji = dto.nameEmoji?.trim() || null;
+    const username = normalizeUsername(dto.username);
     const email = dto.email.trim().toLowerCase();
+
+    if (!firstName) {
+      throw new BadRequestException("First name is required");
+    }
+
+    if (!username) {
+      throw new BadRequestException("Username is required");
+    }
 
     const existingUser = await this.prisma.user.findFirst({
       where: {
@@ -63,7 +79,11 @@ export class AuthService {
         username,
         email,
         passwordHash,
-        displayName: dto.displayName?.trim() || null,
+        firstName,
+        lastName,
+        displayName: formatDisplayName(firstName, lastName),
+        bio: dto.bio?.trim() || null,
+        nameEmoji,
         avatarUrl: dto.avatarUrl?.trim() || null,
       },
       select: this.safeUserSelect(),
@@ -73,15 +93,24 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const email = dto.email.trim().toLowerCase();
+    const identifier = dto.identifier.trim();
+    const isEmailIdentifier = identifier.includes("@");
+    const where = isEmailIdentifier
+      ? { email: identifier.toLowerCase() }
+      : { username: normalizeUsername(identifier) };
+
     const user = await this.prisma.user.findFirst({
-      where: { email },
+      where,
       select: {
         id: true,
+        firstName: true,
+        lastName: true,
         username: true,
         email: true,
         passwordHash: true,
         displayName: true,
+        bio: true,
+        nameEmoji: true,
         avatarUrl: true,
         createdAt: true,
       },
@@ -92,6 +121,24 @@ export class AuthService {
     }
 
     return this.issueAuthResponse(this.toAuthUser(user));
+  }
+
+  async isUsernameAvailable(username: string) {
+    const normalizedUsername = normalizeUsername(username);
+
+    if (!isValidUsername(normalizedUsername)) {
+      throw new BadRequestException("Invalid username");
+    }
+
+    const existingUser = await this.prisma.user.findUnique({
+      where: { username: normalizedUsername },
+      select: { id: true },
+    });
+
+    return {
+      username: normalizedUsername,
+      available: !existingUser,
+    };
   }
 
   async refresh(refreshToken?: string) {
@@ -218,9 +265,13 @@ export class AuthService {
   private safeUserSelect() {
     return {
       id: true,
+      firstName: true,
+      lastName: true,
       username: true,
       email: true,
       displayName: true,
+      bio: true,
+      nameEmoji: true,
       avatarUrl: true,
       createdAt: true,
     } as const;
@@ -230,4 +281,16 @@ export class AuthService {
     const { passwordHash: _passwordHash, ...safeUser } = user;
     return safeUser;
   }
+}
+
+function formatDisplayName(firstName: string, lastName: string | null) {
+  return [firstName, lastName].filter(Boolean).join(" ");
+}
+
+function normalizeUsername(username: string) {
+  return username.trim().toLowerCase();
+}
+
+function isValidUsername(username: string) {
+  return /^[a-z0-9_]{3,20}$/.test(username);
 }

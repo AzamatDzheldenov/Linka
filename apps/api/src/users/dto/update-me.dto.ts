@@ -1,10 +1,31 @@
-import { IsOptional, IsString, IsUrl, MaxLength, MinLength } from "class-validator";
+import {
+  IsOptional,
+  IsString,
+  IsUrl,
+  Matches,
+  MaxLength,
+  MinLength,
+} from "class-validator";
 
 export class UpdateMeDto {
   @IsOptional()
+  @IsString({ message: "First name must be a string" })
+  @MinLength(1, { message: "First name is required" })
+  @MaxLength(64, { message: "First name must be at most 64 characters long" })
+  firstName?: string;
+
+  @IsOptional()
+  @IsString({ message: "Last name must be a string" })
+  @MaxLength(64, { message: "Last name must be at most 64 characters long" })
+  lastName?: string;
+
+  @IsOptional()
   @IsString({ message: "Username must be a string" })
   @MinLength(3, { message: "Username must be at least 3 characters long" })
-  @MaxLength(32, { message: "Username must be at most 32 characters long" })
+  @MaxLength(20, { message: "Username must be at most 20 characters long" })
+  @Matches(/^[a-z0-9_]+$/, {
+    message: "Username may contain only lowercase letters, numbers and underscores",
+  })
   username?: string;
 
   @IsOptional()
@@ -16,4 +37,14 @@ export class UpdateMeDto {
   @IsUrl({}, { message: "Avatar URL must be a valid URL" })
   @MaxLength(2048, { message: "Avatar URL must be at most 2048 characters long" })
   avatarUrl?: string;
+
+  @IsOptional()
+  @IsString({ message: "Bio must be a string" })
+  @MaxLength(160, { message: "Bio must be at most 160 characters long" })
+  bio?: string;
+
+  @IsOptional()
+  @IsString({ message: "Name emoji must be a string" })
+  @MaxLength(15, { message: "Name emoji must be at most 15 characters long" })
+  nameEmoji?: string;
 }

@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { AppearanceProvider } from "@/providers/appearance-provider";
 import { AuthProvider } from "@/providers/auth-provider";
+import { ThemeProvider } from "@/providers/theme-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -13,9 +15,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru">
+    <html lang="ru" suppressHydrationWarning>
       <body>
-        <AuthProvider>{children}</AuthProvider>
+        <ThemeProvider>
+          <AppearanceProvider>
+            <AuthProvider>{children}</AuthProvider>
+          </AppearanceProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

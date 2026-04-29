@@ -8,15 +8,19 @@ import { disconnectSocket } from "@/lib/socket/client";
 import { getMe } from "./users";
 
 export type RegisterInput = {
+  firstName: string;
+  lastName?: string;
   username: string;
   email: string;
   password: string;
   displayName?: string;
+  bio?: string;
+  nameEmoji?: string;
   avatarUrl?: string;
 };
 
 export type LoginInput = {
-  email: string;
+  identifier: string;
   password: string;
 };
 
@@ -45,6 +49,18 @@ export async function login(input: LoginInput) {
 
   await persistAuthResponse(response);
   return response;
+}
+
+export async function checkUsernameAvailability(username: string) {
+  const params = new URLSearchParams({ username });
+
+  return apiRequest<{ username: string; available: boolean }>(
+    `/auth/username-available?${params.toString()}`,
+    {
+      method: "GET",
+      auth: false,
+    },
+  );
 }
 
 export async function refresh() {

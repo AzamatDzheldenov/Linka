@@ -2,19 +2,62 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
-import { register } from "@/lib/api/auth";
+import { FormEvent, useEffect, useState } from "react";
+import { checkUsernameAvailability, register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 import { ru } from "@/lib/i18n/ru";
 
+const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
+
 export default function RegisterPage() {
   const router = useRouter();
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [usernameStatus, setUsernameStatus] = useState<
+    "idle" | "invalid" | "checking" | "available" | "taken" | "error"
+  >("idle");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const normalizedUsername = username.trim().toLowerCase();
+  const isUsernameReady = usernameStatus === "available";
+
+  useEffect(() => {
+    if (!normalizedUsername) {
+      setUsernameStatus("idle");
+      return;
+    }
+
+    if (!USERNAME_PATTERN.test(normalizedUsername)) {
+      setUsernameStatus("invalid");
+      return;
+    }
+
+    let isActive = true;
+    setUsernameStatus("checking");
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const result = await checkUsernameAvailability(normalizedUsername);
+
+        if (isActive) {
+          setUsernameStatus(result.available ? "available" : "taken");
+        }
+      } catch {
+        if (isActive) {
+          setUsernameStatus("error");
+        }
+      }
+    }, 350);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [normalizedUsername]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -25,10 +68,30 @@ export default function RegisterPage() {
       return;
     }
 
+    if (!USERNAME_PATTERN.test(normalizedUsername)) {
+      setError(ru.auth.errors.invalidUsername);
+      return;
+    }
+
+    if (!isUsernameReady) {
+      setError(
+        usernameStatus === "taken"
+          ? ru.auth.errors.usernameTaken
+          : ru.auth.errors.usernameCheckRequired,
+      );
+      return;
+    }
+
     setIsLoading(true);
 
     try {
-      await register({ username, email, password });
+      await register({
+        firstName,
+        lastName,
+        username: normalizedUsername,
+        email,
+        password,
+      });
       router.replace("/chats");
     } catch (error) {
       setError(getRegisterError(error));
@@ -55,20 +118,67 @@ export default function RegisterPage() {
         <form className="space-y-4" onSubmit={handleSubmit}>
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
+              Имя
+            </span>
+            <input
+              className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+              type="text"
+              value={firstName}
+              onChange={(event) => setFirstName(event.target.value)}
+              placeholder="Ваше имя"
+              autoComplete="given-name"
+              disabled={isLoading}
+              maxLength={64}
+              required
+            />
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
+              Фамилия
+            </span>
+            <input
+              className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
+              type="text"
+              value={lastName}
+              onChange={(event) => setLastName(event.target.value)}
+              placeholder="Необязательно"
+              autoComplete="family-name"
+              disabled={isLoading}
+              maxLength={64}
+            />
+          </label>
+
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
               {ru.auth.username}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="text"
               value={username}
-              onChange={(event) => setUsername(event.target.value)}
+              onChange={(event) =>
+                setUsername(event.target.value.toLowerCase().replace(/\s/g, ""))
+              }
               placeholder={ru.auth.usernamePlaceholder}
               autoComplete="username"
               disabled={isLoading}
               minLength={3}
-              maxLength={32}
+              maxLength={20}
+              pattern="[a-z0-9_]{3,20}"
               required
             />
+            <p
+              className={`mt-2 text-xs ${
+                usernameStatus === "available"
+                  ? "text-emerald-300"
+                  : usernameStatus === "taken" || usernameStatus === "invalid"
+                    ? "text-red-200"
+                    : "text-[#8fa3b5]"
+              }`}
+            >
+              {getUsernameHint(usernameStatus)}
+            </p>
           </label>
 
           <label className="block">
@@ -130,7 +240,7 @@ export default function RegisterPage() {
           <button
             className="mt-2 flex h-12 w-full items-center justify-center rounded-md bg-[#2aabee] px-4 text-[15px] font-semibold text-white transition hover:bg-[#239bd8] focus:outline-none focus:ring-2 focus:ring-[#2aabee]/35 disabled:cursor-not-allowed disabled:opacity-70"
             type="submit"
-            disabled={isLoading}
+            disabled={isLoading || !isUsernameReady}
           >
             {isLoading ? ru.auth.creatingAccount : ru.auth.createAccount}
           </button>
@@ -148,6 +258,32 @@ export default function RegisterPage() {
       </section>
     </main>
   );
+}
+
+function getUsernameHint(
+  status: "idle" | "invalid" | "checking" | "available" | "taken" | "error",
+) {
+  if (status === "idle") {
+    return "3-20 символов: a-z, 0-9 и _";
+  }
+
+  if (status === "invalid") {
+    return ru.auth.errors.invalidUsername;
+  }
+
+  if (status === "checking") {
+    return "Проверяем username...";
+  }
+
+  if (status === "available") {
+    return "Username свободен.";
+  }
+
+  if (status === "taken") {
+    return ru.auth.errors.usernameTaken;
+  }
+
+  return "Не удалось проверить username.";
 }
 
 function getRegisterError(error: unknown) {

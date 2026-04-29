@@ -9,7 +9,7 @@ import { ru } from "@/lib/i18n/ru";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -20,7 +20,7 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      await login({ email, password });
+      await login({ identifier, password });
       router.replace("/chats");
     } catch (error) {
       setError(getLoginError(error));
@@ -47,15 +47,15 @@ export default function LoginPage() {
         <form className="space-y-4" onSubmit={handleSubmit}>
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              {ru.auth.email}
+              {ru.auth.identifier}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder={ru.auth.emailPlaceholder}
-              autoComplete="email"
+              type="text"
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+              placeholder={ru.auth.identifierPlaceholder}
+              autoComplete="username"
               disabled={isLoading}
               required
             />

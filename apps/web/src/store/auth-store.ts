@@ -2,9 +2,13 @@ import { create } from "zustand";
 
 export type AuthUser = {
   id: string;
+  firstName: string;
+  lastName: string | null;
   username: string;
   email: string;
   displayName: string | null;
+  bio: string | null;
+  nameEmoji: string | null;
   avatarUrl: string | null;
   createdAt: string;
   updatedAt?: string;

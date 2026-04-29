@@ -7,7 +7,7 @@ import { ru } from "@/lib/i18n/ru";
 import { useAuthStore } from "@/store/auth-store";
 
 const publicRoutes = new Set(["/login", "/register"]);
-const protectedPrefixes = ["/chats"];
+const protectedPrefixes = ["/chats", "/profile", "/settings"];
 
 type AuthProviderProps = {
   children: ReactNode;
@@ -69,8 +69,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   if (routeState.isProtectedRoute && !accessToken && isRefreshing) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-[#0e1621] px-4 text-[#f5f8fb]">
-        <div className="rounded-lg border border-white/5 bg-[#17212b] px-5 py-4 text-sm text-[#8fa3b5] shadow-2xl shadow-black/30">
+      <main className="flex min-h-screen items-center justify-center bg-[var(--app-bg)] px-4 text-[var(--text-main)]">
+        <div className="rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] px-5 py-4 text-sm text-[var(--text-muted)] shadow-2xl shadow-black/30">
           {ru.auth.restoreSession}
         </div>
       </main>

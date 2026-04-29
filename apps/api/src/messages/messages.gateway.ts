@@ -132,6 +132,10 @@ export class MessagesGateway
     });
 
     this.messagesEventsService.emitNewMessage(chatId, message);
+    const memberIds = await this.messagesService.getChatMemberIds(chatId);
+    memberIds.forEach((memberId) => {
+      this.messagesEventsService.emitChatNewMessage(memberId, message);
+    });
     return message;
   }
 
@@ -178,6 +182,7 @@ export class MessagesGateway
       userId: user.id,
       username: user.username,
       displayName: user.displayName,
+      nameEmoji: user.nameEmoji,
     });
 
     return { chatId };

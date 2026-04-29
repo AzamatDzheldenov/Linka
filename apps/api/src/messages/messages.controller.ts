@@ -100,6 +100,10 @@ export class MessagesController {
     });
 
     this.messagesEventsService.emitNewMessage(chatId, message);
+    const memberIds = await this.messagesService.getChatMemberIds(chatId);
+    memberIds.forEach((memberId) => {
+      this.messagesEventsService.emitChatNewMessage(memberId, message);
+    });
     return message;
   }
 }
