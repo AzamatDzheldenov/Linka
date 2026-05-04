@@ -42,6 +42,7 @@ const defaultSettings: Omit<UserSettings, "id" | "userId" | "createdAt" | "updat
   messagePreviewEnabled: true,
   pushEnabled: false,
   soundEnabled: true,
+  requireGroupInviteApproval: false,
 };
 
 export default function SettingsPage() {
@@ -366,6 +367,13 @@ export default function SettingsPage() {
               checked={settings.showReadReceipts}
               label="Показывать read receipts"
               onChange={(value) => updateRemoteSetting("showReadReceipts", value)}
+            />
+            <ToggleRow
+              checked={settings.requireGroupInviteApproval}
+              label="Спрашивать подтверждение перед добавлением в группы"
+              onChange={(value) =>
+                updateRemoteSetting("requireGroupInviteApproval", value)
+              }
             />
           </SettingsSection>
 

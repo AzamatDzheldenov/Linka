@@ -4,18 +4,47 @@ import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Camera,
+  Check,
+  Image,
   LogOut,
+  Megaphone,
   Menu,
   Monitor,
   Moon,
+  Plus,
+  Search,
   Settings,
+  ShieldCheck,
   Sun,
+  Trash2,
   User,
+  Users,
   X,
 } from "lucide-react";
-import { Chat, createPrivateChat, getChats } from "@/lib/api/chats";
+import {
+  Chat,
+  ChatType,
+  GroupInvite,
+  addChatMembers,
+  createChannel,
+  createGroupChat,
+  createPrivateChat,
+  getGroupInvites,
+  getChats,
+  respondToGroupInvite,
+  updateChatMemberRole,
+  updateChatSettings,
+  uploadChatAvatar,
+  uploadChatWallpaper,
+} from "@/lib/api/chats";
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
-import { getMessages, Message, sendMediaMessage } from "@/lib/api/messages";
+import {
+  deleteMessage,
+  getMessages,
+  Message,
+  sendMediaMessage,
+} from "@/lib/api/messages";
 import { logout } from "@/lib/api/auth";
 import {
   emitTypingStart,
@@ -31,6 +60,7 @@ import {
 } from "@/lib/api/users";
 import { AuthUser, useAuthStore } from "@/store/auth-store";
 import { ThemeMode, useTheme } from "@/providers/theme-provider";
+import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
 const MIN_SIDEBAR_WIDTH = 72;
@@ -38,6 +68,23 @@ const DEFAULT_SIDEBAR_WIDTH = 320;
 const MAX_SIDEBAR_WIDTH = 420;
 const COMPACT_SIDEBAR_WIDTH = 96;
 const TYPING_STOP_DELAY_MS = 1400;
+const EMPTY_CHAT_GIFS = [
+  {
+    aspectRatio: "480 / 346",
+    src: "https://media.giphy.com/media/MMquV2oInK40V86Q7g/giphy.gif",
+    title: "Котенок на троне",
+  },
+  {
+    aspectRatio: "1 / 1",
+    src: "https://media.giphy.com/media/G6TgcESZt8FFk8XV7K/giphy.gif",
+    title: "Кот ест чипсы",
+  },
+  {
+    aspectRatio: "1 / 1",
+    src: "https://media.giphy.com/media/4uVyQiFGLicuI/giphy.gif",
+    title: "Ожидание сообщения",
+  },
+] as const;
 
 type TypingUser = {
   chatId: string;
@@ -55,6 +102,8 @@ type ReceiptUpdate = {
   readAt?: string;
 };
 
+type SharedChatKind = Extract<ChatType, "group" | "channel">;
+
 export default function ChatsPage() {
   const router = useRouter();
   const currentUser = useAuthStore((state) => state.currentUser);
@@ -63,10 +112,19 @@ export default function ChatsPage() {
   const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
+  const [sharedChatKind, setSharedChatKind] = useState<SharedChatKind | null>(
+    null,
+  );
+  const [sharedChatTitle, setSharedChatTitle] = useState("");
+  const [sharedChatQuery, setSharedChatQuery] = useState("");
+  const [sharedChatResults, setSharedChatResults] = useState<AuthUser[]>([]);
+  const [selectedMembers, setSelectedMembers] = useState<AuthUser[]>([]);
   const [isMobileDrawerOpen, setIsMobileDrawerOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<AuthUser[]>([]);
   const [chats, setChats] = useState<Chat[]>([]);
+  const [groupInvites, setGroupInvites] = useState<GroupInvite[]>([]);
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
@@ -75,11 +133,17 @@ export default function ChatsPage() {
   const [error, setError] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [isSearchingMembers, setIsSearchingMembers] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isCreatingSharedChat, setIsCreatingSharedChat] = useState(false);
+  const [isGroupSettingsOpen, setIsGroupSettingsOpen] = useState(false);
+  const [isSavingGroupSettings, setIsSavingGroupSettings] = useState(false);
+  const [pendingInviteId, setPendingInviteId] = useState<string | null>(null);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [pendingUserId, setPendingUserId] = useState<string | null>(null);
@@ -316,10 +380,14 @@ export default function ChatsPage() {
       setIsLoadingChats(true);
 
       try {
-        const nextChats = await getChats();
+        const [nextChats, nextInvites] = await Promise.all([
+          getChats(),
+          getGroupInvites(),
+        ]);
 
         if (isActive) {
           setChats(sortChatsByLastMessage(nextChats));
+          setGroupInvites(nextInvites);
           setSelectedChat((current) =>
             current
               ? nextChats.find((chat) => chat.id === current.id) ?? current
@@ -392,6 +460,47 @@ export default function ChatsPage() {
   }, [query]);
 
   useEffect(() => {
+    const normalizedQuery = sharedChatQuery.trim();
+
+    if (!sharedChatKind || !normalizedQuery) {
+      setSharedChatResults([]);
+      setIsSearchingMembers(false);
+      return;
+    }
+
+    let isActive = true;
+    setIsSearchingMembers(true);
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const users = await searchUsers(normalizedQuery);
+
+        if (isActive) {
+          const selectedIds = new Set(selectedMembers.map((user) => user.id));
+          setSharedChatResults(
+            users.filter(
+              (user) => user.id !== currentUser?.id && !selectedIds.has(user.id),
+            ),
+          );
+        }
+      } catch {
+        if (isActive) {
+          setSharedChatResults([]);
+        }
+      } finally {
+        if (isActive) {
+          setIsSearchingMembers(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [currentUser?.id, selectedMembers, sharedChatKind, sharedChatQuery]);
+
+  useEffect(() => {
     if (!selectedChat) {
       setMessages([]);
       setTypingUsers([]);
@@ -446,6 +555,16 @@ export default function ChatsPage() {
       }
     }
 
+    function handleMessageUpdated(message: Message) {
+      if (message.chatId !== selectedChat?.id) {
+        return;
+      }
+
+      setMessages((currentMessages) =>
+        currentMessages.map((item) => (item.id === message.id ? message : item)),
+      );
+    }
+
     function handleMessageDelivered(payload: ReceiptUpdate) {
       updateMessageReceipts(payload, "delivered");
     }
@@ -482,6 +601,7 @@ export default function ChatsPage() {
     setTypingUsers([]);
     socket?.emit("joinChat", { chatId: selectedChat.id });
     socket?.on("newMessage", handleNewMessage);
+    socket?.on("message:updated", handleMessageUpdated);
     socket?.on("message:delivered", handleMessageDelivered);
     socket?.on("message:read", handleMessageRead);
     socket?.on("userTyping:start", handleTypingStart);
@@ -495,6 +615,7 @@ export default function ChatsPage() {
       stopTyping(selectedChat.id);
       socket?.emit("leaveChat", { chatId: selectedChat.id });
       socket?.off("newMessage", handleNewMessage);
+      socket?.off("message:updated", handleMessageUpdated);
       socket?.off("message:delivered", handleMessageDelivered);
       socket?.off("message:read", handleMessageRead);
       socket?.off("userTyping:start", handleTypingStart);
@@ -560,6 +681,233 @@ export default function ChatsPage() {
     } finally {
       setPendingUserId(null);
     }
+  }
+
+  function handleOpenSharedChatModal(kind: SharedChatKind) {
+    setSharedChatKind(kind);
+    setIsCreateMenuOpen(false);
+    setSharedChatTitle("");
+    setSharedChatQuery("");
+    setSharedChatResults([]);
+    setSelectedMembers([]);
+    setError(null);
+  }
+
+  function handleCloseSharedChatModal() {
+    if (isCreatingSharedChat) {
+      return;
+    }
+
+    setSharedChatKind(null);
+    setSharedChatTitle("");
+    setSharedChatQuery("");
+    setSharedChatResults([]);
+    setSelectedMembers([]);
+  }
+
+  function handleToggleSelectedMember(user: AuthUser) {
+    setSelectedMembers((currentMembers) =>
+      currentMembers.some((member) => member.id === user.id)
+        ? currentMembers.filter((member) => member.id !== user.id)
+        : [...currentMembers, user],
+    );
+  }
+
+  async function handleCreateSharedChat(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!sharedChatKind) {
+      return;
+    }
+
+    const title = sharedChatTitle.trim();
+    const memberIds = selectedMembers.map((member) => member.id);
+
+    if (!title || !memberIds.length) {
+      setError(ru.chats.errors.createSharedChat);
+      return;
+    }
+
+    setIsCreatingSharedChat(true);
+    setError(null);
+
+    try {
+      const chat =
+        sharedChatKind === "group"
+          ? await createGroupChat({ title, memberIds })
+          : await createChannel({ title, memberIds });
+
+      setSelectedChat(chat);
+      setIsMobileDrawerOpen(false);
+      setChats((currentChats) => {
+        const withoutChat = currentChats.filter((item) => item.id !== chat.id);
+        return sortChatsByLastMessage([chat, ...withoutChat]);
+      });
+      setSharedChatKind(null);
+      setSharedChatTitle("");
+      setSharedChatQuery("");
+      setSharedChatResults([]);
+      setSelectedMembers([]);
+    } catch {
+      setError(ru.chats.errors.createSharedChat);
+    } finally {
+      setIsCreatingSharedChat(false);
+    }
+  }
+
+  async function handleRespondToInvite(
+    invite: GroupInvite,
+    status: "accepted" | "declined",
+  ) {
+    setPendingInviteId(invite.id);
+    setError(null);
+
+    try {
+      const response = await respondToGroupInvite(invite.id, status);
+      setGroupInvites((currentInvites) =>
+        currentInvites.filter((item) => item.id !== invite.id),
+      );
+
+      if (status === "accepted" && "unreadCount" in response) {
+        setChats((currentChats) => sortChatsByLastMessage([response, ...currentChats]));
+        setSelectedChat(response);
+        setIsMobileDrawerOpen(false);
+      }
+    } catch {
+      setError(ru.chats.errors.respondInvite);
+    } finally {
+      setPendingInviteId(null);
+    }
+  }
+
+  function mergeChat(chat: Chat) {
+    setChats((currentChats) =>
+      sortChatsByLastMessage(
+        currentChats.map((item) => (item.id === chat.id ? chat : item)),
+      ),
+    );
+    setSelectedChat((currentChat) =>
+      currentChat?.id === chat.id ? chat : currentChat,
+    );
+  }
+
+  async function handleSaveGroupTitle(title: string) {
+    if (!selectedChat) {
+      return;
+    }
+
+    setIsSavingGroupSettings(true);
+    setMessageError(null);
+
+    try {
+      mergeChat(await updateChatSettings(selectedChat.id, { title }));
+    } catch {
+      setMessageError(ru.chats.errors.updateGroup);
+    } finally {
+      setIsSavingGroupSettings(false);
+    }
+  }
+
+  async function handleAddGroupMembers(memberIds: string[]) {
+    if (!selectedChat) {
+      return;
+    }
+
+    setIsSavingGroupSettings(true);
+    setMessageError(null);
+
+    try {
+      mergeChat(await addChatMembers(selectedChat.id, memberIds));
+    } catch {
+      setMessageError(ru.chats.errors.updateGroup);
+    } finally {
+      setIsSavingGroupSettings(false);
+    }
+  }
+
+  async function handleUpdateGroupRole(userId: string, role: "admin" | "member") {
+    if (!selectedChat) {
+      return;
+    }
+
+    setIsSavingGroupSettings(true);
+    setMessageError(null);
+
+    try {
+      mergeChat(await updateChatMemberRole(selectedChat.id, userId, role));
+    } catch {
+      setMessageError(ru.chats.errors.updateGroup);
+    } finally {
+      setIsSavingGroupSettings(false);
+    }
+  }
+
+  async function handleGroupAvatarChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!selectedChat || !file) {
+      return;
+    }
+
+    setIsSavingGroupSettings(true);
+    setMessageError(null);
+
+    try {
+      mergeChat(await uploadChatAvatar(selectedChat.id, file));
+    } catch {
+      setMessageError(ru.chats.errors.updateGroup);
+    } finally {
+      setIsSavingGroupSettings(false);
+    }
+  }
+
+  async function handleGroupWallpaperChange(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+
+    if (!selectedChat || !file) {
+      return;
+    }
+
+    setIsSavingGroupSettings(true);
+    setMessageError(null);
+
+    try {
+      mergeChat(await uploadChatWallpaper(selectedChat.id, file));
+    } catch {
+      setMessageError(ru.chats.errors.updateGroup);
+    } finally {
+      setIsSavingGroupSettings(false);
+    }
+  }
+
+  async function handleDeleteMessage(message: Message) {
+    if (!selectedChat || deletingMessageId) {
+      return;
+    }
+
+    setDeletingMessageId(message.id);
+    setMessageError(null);
+
+    try {
+      const deletedMessage = await deleteMessage(selectedChat.id, message.id);
+      setMessages((currentMessages) =>
+        currentMessages.map((item) =>
+          item.id === deletedMessage.id ? deletedMessage : item,
+        ),
+      );
+    } catch {
+      setMessageError(ru.chats.errors.deleteMessage);
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
+  function handleMentionAll() {
+    setMessageText((currentText) =>
+      currentText.trim() ? `${currentText} @all ` : "@all ",
+    );
   }
 
   function handleSendMessage(event: FormEvent<HTMLFormElement>) {
@@ -810,11 +1158,7 @@ export default function ChatsPage() {
             isCompactSidebar ? "px-3" : "px-4"
           }`}
         >
-          <div
-            className={`flex items-center ${
-              isCompactSidebar ? "justify-center" : "gap-3"
-            }`}
-          >
+          <div className={`flex items-center ${isCompactSidebar ? "gap-1" : "gap-2"}`}>
             <input
               ref={profileFileInputRef}
               accept="image/jpeg,image/png,image/webp"
@@ -827,38 +1171,38 @@ export default function ChatsPage() {
               <button
                 aria-expanded={isUserMenuOpen}
                 aria-haspopup="menu"
-                className="block rounded-full outline-none transition focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-wait disabled:opacity-70"
+                aria-label="Открыть меню аккаунта"
+                className={`flex shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] outline-none transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-wait disabled:opacity-70 ${
+                  isCompactSidebar ? "h-8 w-8" : "h-10 w-10"
+                }`}
                 disabled={isUploadingAvatar}
                 onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
-                title="Открыть меню"
+                title="Открыть меню аккаунта"
                 type="button"
               >
-                <Avatar
-                  avatarUrl={currentUser?.avatarUrl ?? null}
-                  label={getUserLabel(currentUser)}
-                />
+                <Menu size={isCompactSidebar ? 20 : 22} />
               </button>
               <AnimatePresence>
                 {isUserMenuOpen ? (
                   <UserMenu
+                    currentUser={currentUser}
+                    isUploadingAvatar={isUploadingAvatar}
                     isLoggingOut={isLoggingOut}
-                  onLogout={handleLogout}
-                  onProfile={handleProfileClick}
-                  onSettings={handleSettingsClick}
-                  onTheme={handleThemeClick}
+                    onLogout={handleLogout}
+                    onProfile={handleProfileClick}
+                    onSettings={handleSettingsClick}
+                    onTheme={handleThemeClick}
+                    onUploadAvatar={() => profileFileInputRef.current?.click()}
                     theme={theme}
                   />
                 ) : null}
               </AnimatePresence>
             </div>
-            <div className={`min-w-0 ${isCompactSidebar ? "hidden" : "block"}`}>
-              <p className="truncate text-[15px] font-semibold text-[var(--text-main)]">
-                {currentUser ? getUserDisplayName(currentUser) : "Linka"}
-              </p>
-              <p className="truncate text-sm text-[var(--text-muted)]">
-                @{currentUser?.username ?? ru.chats.loadingProfile}
-              </p>
-            </div>
+            <LinkaBrand
+              className="min-w-0"
+              iconSize={isCompactSidebar ? 28 : 38}
+              textClassName={isCompactSidebar ? "sr-only" : "truncate text-[var(--text-main)]"}
+            />
             {isMobile ? (
               <button
                 aria-label="Закрыть меню"
@@ -891,7 +1235,7 @@ export default function ChatsPage() {
           </div>
         )}
 
-        <section className="min-h-0 flex-1 overflow-y-auto">
+        <section className="min-h-0 flex-1 overflow-y-auto pb-24">
           {!isCompactSidebar && query.trim() ? (
             <SearchResults
               compact={isCompactSidebar}
@@ -905,13 +1249,23 @@ export default function ChatsPage() {
             <ChatList
               chats={chats}
               compact={isCompactSidebar}
+              groupInvites={groupInvites}
               isLoading={isLoadingChats}
               messagePreviewEnabled={userSettings?.messagePreviewEnabled !== false}
+              onRespondToInvite={handleRespondToInvite}
               onSelectChat={handleSelectChat}
+              pendingInviteId={pendingInviteId}
               selectedChatId={selectedChat?.id ?? null}
             />
           )}
         </section>
+
+        <CreateChatFab
+          compact={isCompactSidebar}
+          isOpen={isCreateMenuOpen}
+          onOpenChange={setIsCreateMenuOpen}
+          onSelectKind={handleOpenSharedChatModal}
+        />
 
         <button
           aria-label={ru.chats.resizeSidebar}
@@ -928,8 +1282,11 @@ export default function ChatsPage() {
       <ChatArea
         currentUserId={currentUser?.id ?? null}
         isLoadingMessages={isLoadingMessages}
+        isGroupSettingsOpen={isGroupSettingsOpen}
+        isSavingGroupSettings={isSavingGroupSettings}
         isSending={isSending}
         isUploadingMedia={isUploadingMedia}
+        deletingMessageId={deletingMessageId}
         messageError={messageError}
         messageText={messageText}
         messages={messages}
@@ -937,41 +1294,96 @@ export default function ChatsPage() {
         isMobile={isMobile === true}
         onBackToChats={handleBackToChats}
         onMediaChange={handleMediaChange}
+        onAddGroupMembers={handleAddGroupMembers}
+        onCloseGroupSettings={() => setIsGroupSettingsOpen(false)}
+        onDeleteMessage={handleDeleteMessage}
+        onGroupAvatarChange={handleGroupAvatarChange}
+        onGroupWallpaperChange={handleGroupWallpaperChange}
+        onMentionAll={handleMentionAll}
         onOpenMenu={() => setIsMobileDrawerOpen(true)}
         onOpenProfile={handleOpenProfile}
+        onOpenGroupSettings={() => setIsGroupSettingsOpen(true)}
+        onSaveGroupTitle={handleSaveGroupTitle}
+        onUpdateGroupRole={handleUpdateGroupRole}
         onMessageTextChange={handleMessageTextChange}
         onSendMessage={handleSendMessage}
         selectedChat={selectedChat}
         typingUsers={typingUsers}
       />
+      <AnimatePresence>
+        {sharedChatKind ? (
+          <SharedChatModal
+            error={error}
+            isCreating={isCreatingSharedChat}
+            isSearching={isSearchingMembers}
+            kind={sharedChatKind}
+            onClose={handleCloseSharedChatModal}
+            onCreate={handleCreateSharedChat}
+            onQueryChange={setSharedChatQuery}
+            onTitleChange={setSharedChatTitle}
+            onToggleMember={handleToggleSelectedMember}
+            query={sharedChatQuery}
+            results={sharedChatResults}
+            selectedMembers={selectedMembers}
+            title={sharedChatTitle}
+          />
+        ) : null}
+      </AnimatePresence>
     </main>
   );
 }
 
 function UserMenu({
+  currentUser,
   isLoggingOut,
+  isUploadingAvatar,
   onLogout,
   onProfile,
   onSettings,
   onTheme,
+  onUploadAvatar,
   theme,
 }: {
+  currentUser: AuthUser | null;
   isLoggingOut: boolean;
+  isUploadingAvatar: boolean;
   onLogout: () => void;
   onProfile: () => void;
   onSettings: () => void;
   onTheme: () => void;
+  onUploadAvatar: () => void;
   theme: ThemeMode;
 }) {
   return (
     <motion.div
       animate={{ opacity: 1, scale: 1, y: 0 }}
-      className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-56 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
+      className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-72 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
       exit={{ opacity: 0, scale: 0.98, y: -6 }}
       initial={{ opacity: 0, scale: 0.98, y: -6 }}
       role="menu"
       transition={{ duration: 0.16, ease: "easeOut" }}
     >
+      <div className="flex items-center gap-3 border-b border-[var(--border-soft)] px-3 py-3">
+        <Avatar
+          avatarUrl={currentUser?.avatarUrl ?? null}
+          label={getUserLabel(currentUser)}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[15px] font-semibold text-[var(--text-main)]">
+            {currentUser ? getUserDisplayName(currentUser) : "Linka"}
+          </p>
+          <p className="truncate text-sm text-[var(--text-muted)]">
+            @{currentUser?.username ?? ru.chats.loadingProfile}
+          </p>
+        </div>
+      </div>
+      <MenuButton
+        disabled={isUploadingAvatar}
+        icon={<Camera size={18} />}
+        onClick={onUploadAvatar}
+      >
+        {isUploadingAvatar ? ru.chats.uploading : ru.chats.uploadAvatar}
+      </MenuButton>
       <MenuButton icon={<User size={18} />} onClick={onProfile}>
         Профиль
       </MenuButton>
@@ -1027,31 +1439,321 @@ function MenuButton({
   );
 }
 
+function CreateChatFab({
+  compact,
+  isOpen,
+  onOpenChange,
+  onSelectKind,
+}: {
+  compact: boolean;
+  isOpen: boolean;
+  onOpenChange: (isOpen: boolean) => void;
+  onSelectKind: (kind: SharedChatKind) => void;
+}) {
+  return (
+    <div className="absolute bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-20">
+      <AnimatePresence>
+        {isOpen ? (
+          <motion.div
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="mb-3 w-56 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
+            exit={{ opacity: 0, scale: 0.98, y: 8 }}
+            initial={{ opacity: 0, scale: 0.98, y: 8 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+          >
+            <CreateChatMenuButton
+              icon={<Users size={18} />}
+              onClick={() => onSelectKind("group")}
+            >
+              {ru.chats.createGroup}
+            </CreateChatMenuButton>
+            <CreateChatMenuButton
+              icon={<Megaphone size={18} />}
+              onClick={() => onSelectKind("channel")}
+            >
+              {ru.chats.createChannel}
+            </CreateChatMenuButton>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        aria-label={ru.chats.createChat}
+        className="ml-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-xl shadow-black/25 transition hover:bg-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
+        onClick={() => onOpenChange(!isOpen)}
+        title={ru.chats.createChat}
+        type="button"
+      >
+        <Plus size={compact ? 22 : 24} />
+      </button>
+    </div>
+  );
+}
+
+function CreateChatMenuButton({
+  children,
+  icon,
+  onClick,
+}: {
+  children: React.ReactNode;
+  icon: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      className="flex h-11 w-full items-center gap-3 px-3 text-left text-sm text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]"
+      onClick={onClick}
+      type="button"
+    >
+      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--input-bg)] text-[var(--text-muted)]">
+        {icon}
+      </span>
+      {children}
+    </button>
+  );
+}
+
+function SharedChatModal({
+  error,
+  isCreating,
+  isSearching,
+  kind,
+  onClose,
+  onCreate,
+  onQueryChange,
+  onTitleChange,
+  onToggleMember,
+  query,
+  results,
+  selectedMembers,
+  title,
+}: {
+  error: string | null;
+  isCreating: boolean;
+  isSearching: boolean;
+  kind: SharedChatKind;
+  onClose: () => void;
+  onCreate: (event: FormEvent<HTMLFormElement>) => void;
+  onQueryChange: (value: string) => void;
+  onTitleChange: (value: string) => void;
+  onToggleMember: (user: AuthUser) => void;
+  query: string;
+  results: AuthUser[];
+  selectedMembers: AuthUser[];
+  title: string;
+}) {
+  const isGroup = kind === "group";
+  const selectedIds = new Set(selectedMembers.map((member) => member.id));
+  const canCreate = title.trim().length > 0 && selectedMembers.length > 0;
+
+  return (
+    <motion.div
+      animate={{ opacity: 1 }}
+      className="fixed inset-0 z-[70] flex items-end bg-black/45 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 backdrop-blur-[1px] md:items-center md:justify-center md:p-6"
+      exit={{ opacity: 0 }}
+      initial={{ opacity: 0 }}
+      role="dialog"
+      aria-modal="true"
+    >
+      <motion.form
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="max-h-[88dvh] w-full overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/30 md:max-w-lg"
+        exit={{ opacity: 0, scale: 0.98, y: 16 }}
+        initial={{ opacity: 0, scale: 0.98, y: 16 }}
+        onSubmit={onCreate}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+      >
+        <header className="flex items-center gap-3 border-b border-[var(--border-soft)] px-4 py-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--input-bg)] text-[var(--accent)]">
+            {isGroup ? <Users size={20} /> : <Megaphone size={20} />}
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[16px] font-semibold text-[var(--text-main)]">
+              {isGroup ? ru.chats.newGroup : ru.chats.newChannel}
+            </h2>
+            <p className="truncate text-sm text-[var(--text-muted)]">
+              {isGroup ? ru.chats.groupCreationHint : ru.chats.channelCreationHint}
+            </p>
+          </div>
+          <button
+            aria-label="Закрыть"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+            disabled={isCreating}
+            onClick={onClose}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+        </header>
+
+        <div className="max-h-[calc(88dvh-8rem)] overflow-y-auto px-4 py-4">
+          <label className="block">
+            <span className="mb-1.5 block text-sm font-medium text-[var(--text-main)]">
+              {ru.chats.sharedChatTitle}
+            </span>
+            <input
+              className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+              disabled={isCreating}
+              maxLength={80}
+              onChange={(event) => onTitleChange(event.target.value)}
+              placeholder={isGroup ? ru.chats.groupTitlePlaceholder : ru.chats.channelTitlePlaceholder}
+              value={title}
+            />
+          </label>
+
+          {selectedMembers.length ? (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {selectedMembers.map((member) => (
+                <button
+                  className="flex h-8 max-w-full items-center gap-2 rounded-full bg-[var(--active-soft)] px-2.5 text-sm text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]"
+                  disabled={isCreating}
+                  key={member.id}
+                  onClick={() => onToggleMember(member)}
+                  type="button"
+                >
+                  <span className="truncate">{getUserDisplayName(member)}</span>
+                  <X size={14} />
+                </button>
+              ))}
+            </div>
+          ) : null}
+
+          <label className="mt-4 block">
+            <span className="mb-1.5 block text-sm font-medium text-[var(--text-main)]">
+              {ru.chats.addMembers}
+            </span>
+            <span className="relative block">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-soft)]"
+                size={18}
+              />
+              <input
+                className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] pl-10 pr-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                disabled={isCreating}
+                onChange={(event) => onQueryChange(event.target.value)}
+                placeholder={ru.chats.searchUsers}
+                type="search"
+                value={query}
+              />
+            </span>
+          </label>
+
+          <div className="mt-3 overflow-hidden rounded-lg border border-[var(--border-soft)]">
+            {isSearching ? (
+              <ChatListSkeleton compact={false} rows={3} />
+            ) : query.trim() && !results.length ? (
+              <StateMessage>{ru.chats.noUsersFound}</StateMessage>
+            ) : (
+              <ul className="max-h-64 divide-y divide-[var(--border-soft)] overflow-y-auto">
+                {results.map((user) => {
+                  const isSelected = selectedIds.has(user.id);
+
+                  return (
+                    <li key={user.id}>
+                      <button
+                        className="flex w-full items-center gap-3 px-3 py-3 text-left transition hover:bg-[var(--hover-soft)]"
+                        disabled={isCreating}
+                        onClick={() => onToggleMember(user)}
+                        type="button"
+                      >
+                        <Avatar
+                          avatarUrl={user.avatarUrl}
+                          label={getUserDisplayName(user)}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-[15px] font-medium text-[var(--text-main)]">
+                            {getUserDisplayName(user)}
+                          </span>
+                          <span className="block truncate text-sm text-[var(--text-muted)]">
+                            @{user.username}
+                          </span>
+                        </span>
+                        {isSelected ? (
+                          <Check className="text-[var(--accent)]" size={18} />
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+                {!query.trim() ? (
+                  <StateMessage>{ru.chats.searchUsersHint}</StateMessage>
+                ) : null}
+              </ul>
+            )}
+          </div>
+
+          {error ? (
+            <p className="mt-3 text-sm text-[var(--danger)]">{error}</p>
+          ) : null}
+        </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-[var(--border-soft)] px-4 py-3">
+          <button
+            className="h-10 rounded-md px-4 text-[15px] font-medium text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isCreating}
+            onClick={onClose}
+            type="button"
+          >
+            {ru.chats.cancel}
+          </button>
+          <button
+            className="h-10 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={isCreating || !canCreate}
+            type="submit"
+          >
+            {isCreating ? ru.chats.creating : ru.chats.create}
+          </button>
+        </footer>
+      </motion.form>
+    </motion.div>
+  );
+}
+
 function ChatList({
   chats,
   compact,
+  groupInvites,
   isLoading,
   messagePreviewEnabled,
+  onRespondToInvite,
   onSelectChat,
+  pendingInviteId,
   selectedChatId,
 }: {
   chats: Chat[];
   compact: boolean;
+  groupInvites: GroupInvite[];
   isLoading: boolean;
   messagePreviewEnabled: boolean;
+  onRespondToInvite: (
+    invite: GroupInvite,
+    status: "accepted" | "declined",
+  ) => void;
   onSelectChat: (chat: Chat) => void;
+  pendingInviteId: string | null;
   selectedChatId: string | null;
 }) {
   if (isLoading) {
     return <ChatListSkeleton compact={compact} />;
   }
 
-  if (!chats.length) {
-    return <StateMessage>{ru.chats.noChats}</StateMessage>;
+  if (!chats.length && !groupInvites.length) {
+    return <EmptyChatsState compact={compact} />;
   }
 
   return (
     <ul className="divide-y divide-[var(--border-soft)]">
+      {groupInvites.map((invite) => (
+        <li key={invite.id}>
+          <InviteListItem
+            compact={compact}
+            invite={invite}
+            isPending={pendingInviteId === invite.id}
+            onRespond={onRespondToInvite}
+          />
+        </li>
+      ))}
       {chats.map((chat) => (
         <li key={chat.id}>
           <button
@@ -1062,16 +1764,20 @@ function ChatList({
             } ${compact ? "justify-center px-3" : "gap-3"}`}
             onClick={() => onSelectChat(chat)}
             type="button"
-            title={chat.partner?.username ? `@${chat.partner.username}` : ru.chats.privateChat}
+            title={getChatTitle(chat)}
           >
             <Avatar
-              avatarUrl={chat.partner?.avatarUrl ?? null}
-              label={chat.partner ? getUserDisplayName(chat.partner) : ru.chats.privateChat}
+              avatarUrl={
+                chat.type === "private"
+                  ? chat.partner?.avatarUrl ?? null
+                  : chat.avatarUrl
+              }
+              label={getChatTitle(chat)}
             />
             <div className={`min-w-0 ${compact ? "hidden" : "block"}`}>
               <div className="flex min-w-0 items-center gap-2">
                 <p className="min-w-0 flex-1 truncate text-[15px] font-medium text-[var(--text-main)]">
-                  {chat.partner ? getUserDisplayName(chat.partner) : ru.chats.privateChat}
+                  {getChatTitle(chat)}
                 </p>
                 {chat.lastMessageAt ? (
                   <span className="shrink-0 text-xs text-[var(--text-muted)]">
@@ -1092,6 +1798,78 @@ function ChatList({
         </li>
       ))}
     </ul>
+  );
+}
+
+function EmptyChatsState({ compact }: { compact: boolean }) {
+  if (compact) {
+    return (
+      <div className="flex justify-center px-3 py-5">
+        <LinkaIcon size={44} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 py-8 text-center">
+      <LinkaIcon className="mx-auto" size={52} />
+      <p className="mt-4 text-sm font-medium text-[var(--text-main)]">
+        {ru.chats.noChats}
+      </p>
+      <RandomEmptyGif className="mt-4" />
+    </div>
+  );
+}
+
+function EmptyChatThreadState({
+  description,
+  title,
+}: {
+  description: string;
+  title: string;
+}) {
+  return (
+    <div className="px-4">
+      <RandomEmptyGif />
+      <h1 className="mt-4 text-xl font-semibold text-[var(--text-main)] md:text-2xl">
+        {title}
+      </h1>
+      <p className="mx-auto mt-2 max-w-sm text-sm text-[var(--text-muted)]">
+        {description}
+      </p>
+    </div>
+  );
+}
+
+function RandomEmptyGif({ className = "" }: { className?: string }) {
+  const [activeGifIndex, setActiveGifIndex] = useState<number | null>(null);
+  const gif =
+    activeGifIndex === null ? null : EMPTY_CHAT_GIFS[activeGifIndex];
+
+  useEffect(() => {
+    setActiveGifIndex(Math.floor(Math.random() * EMPTY_CHAT_GIFS.length));
+  }, []);
+
+  if (!gif) {
+    return null;
+  }
+
+  return (
+    <div className={className}>
+      <div
+        className="mx-auto w-full max-w-[280px] overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-xl shadow-black/10"
+        style={{ aspectRatio: gif.aspectRatio }}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          alt={gif.title}
+          className="h-full w-full"
+          loading="lazy"
+          src={gif.src}
+          draggable={false}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1118,6 +1896,62 @@ function ChatListSkeleton({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function InviteListItem({
+  compact,
+  invite,
+  isPending,
+  onRespond,
+}: {
+  compact: boolean;
+  invite: GroupInvite;
+  isPending: boolean;
+  onRespond: (invite: GroupInvite, status: "accepted" | "declined") => void;
+}) {
+  return (
+    <div
+      className={`px-4 py-3 ${compact ? "flex justify-center px-3" : ""}`}
+      title={ru.chats.officialInvite}
+    >
+      {compact ? (
+        <LinkaIcon size={44} />
+      ) : (
+        <div className="flex gap-3">
+          <LinkaIcon size={44} />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[15px] font-medium text-[var(--text-main)]">
+              {ru.chats.officialInvite}
+            </p>
+            <p className="mt-0.5 text-sm text-[var(--text-muted)]">
+              {ru.chats.inviteToGroup(
+                invite.chat.title ?? ru.chats.group,
+                getUserDisplayName(invite.inviter),
+              )}
+            </p>
+            <div className="mt-2 flex gap-2">
+              <button
+                className="h-8 rounded-md bg-[var(--accent)] px-3 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
+                disabled={isPending}
+                onClick={() => onRespond(invite, "accepted")}
+                type="button"
+              >
+                {ru.chats.accept}
+              </button>
+              <button
+                className="h-8 rounded-md px-3 text-sm font-medium text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] disabled:opacity-60"
+                disabled={isPending}
+                onClick={() => onRespond(invite, "declined")}
+                type="button"
+              >
+                {ru.chats.decline}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1191,42 +2025,69 @@ function SearchResults({
 
 function ChatArea({
   currentUserId,
+  deletingMessageId,
+  isGroupSettingsOpen,
   isLoadingMessages,
   isMobile,
+  isSavingGroupSettings,
   isSending,
   isUploadingMedia,
   messageError,
   messageText,
   messages,
   messagesEndRef,
+  onAddGroupMembers,
   onBackToChats,
+  onCloseGroupSettings,
+  onDeleteMessage,
+  onGroupAvatarChange,
+  onGroupWallpaperChange,
+  onMentionAll,
   onMediaChange,
   onOpenMenu,
   onOpenProfile,
+  onOpenGroupSettings,
   onMessageTextChange,
+  onSaveGroupTitle,
   onSendMessage,
+  onUpdateGroupRole,
   selectedChat,
   typingUsers,
 }: {
   currentUserId: string | null;
+  deletingMessageId: string | null;
+  isGroupSettingsOpen: boolean;
   isLoadingMessages: boolean;
   isMobile: boolean;
+  isSavingGroupSettings: boolean;
   isSending: boolean;
   isUploadingMedia: boolean;
   messageError: string | null;
   messageText: string;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  onAddGroupMembers: (memberIds: string[]) => void;
   onBackToChats: () => void;
+  onCloseGroupSettings: () => void;
+  onDeleteMessage: (message: Message) => void;
+  onGroupAvatarChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onGroupWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onMentionAll: () => void;
   onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onOpenMenu: () => void;
   onOpenProfile: (username: string) => void;
+  onOpenGroupSettings: () => void;
   onMessageTextChange: (value: string) => void;
+  onSaveGroupTitle: (title: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onUpdateGroupRole: (userId: string, role: "admin" | "member") => void;
   selectedChat: Chat | null;
   typingUsers: TypingUser[];
 }) {
   const typingText = getTypingText(typingUsers);
+  const canPost = canPostInChat(selectedChat);
+  const canManageGroup = canManageSelectedGroup(selectedChat);
+  const isGroupOwner = selectedChat?.type === "group" && selectedChat.currentUserRole === "owner";
 
   return (
     <motion.section
@@ -1235,7 +2096,7 @@ function ChatArea({
       }`}
       initial={false}
     >
-      {selectedChat?.partner ? (
+      {selectedChat ? (
         <motion.div
           animate={{ opacity: 1, x: 0 }}
           className="flex h-full min-h-0 flex-col"
@@ -1268,25 +2129,47 @@ function ChatArea({
                   onOpenProfile(selectedChat.partner.username);
                 }
               }}
-              title={`@${selectedChat.partner.username}`}
+              title={getChatTitle(selectedChat)}
               type="button"
             >
               <Avatar
-                avatarUrl={selectedChat.partner.avatarUrl}
-                label={getUserDisplayName(selectedChat.partner)}
+                avatarUrl={
+                  selectedChat.type === "private"
+                    ? selectedChat.partner?.avatarUrl ?? null
+                    : selectedChat.avatarUrl
+                }
+                label={getChatTitle(selectedChat)}
               />
               <div className="min-w-0">
                 <p className="truncate text-[15px] font-semibold text-[var(--text-main)]">
-                  {getUserDisplayName(selectedChat.partner)}
+                  {getChatTitle(selectedChat)}
                 </p>
                 <p className="truncate text-sm text-[var(--text-muted)]">
-                  {typingText ?? `@${selectedChat.partner.username}`}
+                  {typingText ?? getChatSubtitle(selectedChat)}
                 </p>
               </div>
             </button>
+            {canManageGroup ? (
+              <button
+                aria-label={ru.chats.groupSettings}
+                className="ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+                onClick={onOpenGroupSettings}
+                title={ru.chats.groupSettings}
+                type="button"
+              >
+                <Settings size={20} />
+              </button>
+            ) : null}
           </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-3 py-4 md:px-5 md:py-5">
+          <div
+            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-cover bg-center px-3 py-4 md:px-5 md:py-5"
+            style={
+              selectedChat.wallpaperUrl
+                ? { backgroundImage: `url(${resolveUploadUrl(selectedChat.wallpaperUrl)})` }
+                : undefined
+            }
+          >
             {isLoadingMessages ? (
               <MessageSkeleton />
             ) : messages.length ? (
@@ -1310,8 +2193,15 @@ function ChatArea({
                           <DateSeparator value={message.createdAt} />
                         ) : null}
                         <MessageBubble
+                          canDelete={
+                            message.senderId === currentUserId || canManageGroup
+                          }
+                          chatType={selectedChat.type}
+                          deletingMessageId={deletingMessageId}
                           isOwn={message.senderId === currentUserId}
                           message={message}
+                          onDelete={onDeleteMessage}
+                          onOpenProfile={onOpenProfile}
                         />
                       </motion.div>
                     );
@@ -1326,84 +2216,113 @@ function ChatArea({
                   initial={{ opacity: 0, y: 8 }}
                   transition={{ duration: 0.2 }}
                 >
-                  <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--panel-bg)] text-2xl font-semibold text-[var(--accent)]">
-                    {getUserDisplayName(selectedChat.partner).slice(0, 1).toUpperCase()}
-                  </div>
-                  <h1 className="text-xl font-semibold text-[var(--text-main)] md:text-2xl">
-                    {ru.chats.chatWith(selectedChat.partner.username)}
-                  </h1>
-                  <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
-                    {ru.chats.firstMessageHint}
-                  </p>
+                  <EmptyChatThreadState
+                    description={ru.chats.firstMessageHint}
+                    title={getEmptyChatTitle(selectedChat)}
+                  />
                   <div ref={messagesEndRef} />
                 </motion.div>
               </div>
             )}
           </div>
 
-          <form
-            className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
-            onSubmit={onSendMessage}
-          >
-            {messageError ? (
-              <p className="mb-2 text-sm text-[var(--danger)]">{messageError}</p>
-            ) : null}
-            {isUploadingMedia ? (
-              <p className="mb-2 text-sm text-[var(--text-muted)]">{ru.chats.uploading}</p>
-            ) : null}
-            <div className="flex min-w-0 items-end gap-2 md:gap-3">
-              <label
-                className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-xl font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)] ${
-                  isUploadingMedia ? "cursor-wait opacity-60" : "cursor-pointer"
-                }`}
-                title={ru.chats.attachFile}
-              >
-                <input
-                  accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/webm,application/pdf"
-                  className="sr-only"
-                  disabled={isUploadingMedia}
-                  onChange={onMediaChange}
-                  type="file"
-                />
-                <span aria-hidden="true">+</span>
-              </label>
-              <textarea
-                className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
-                onChange={(event) => onMessageTextChange(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    event.currentTarget.form?.requestSubmit();
+          {canPost ? (
+            <form
+              className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
+              onSubmit={onSendMessage}
+            >
+              {messageError ? (
+                <p className="mb-2 text-sm text-[var(--danger)]">{messageError}</p>
+              ) : null}
+              {isUploadingMedia ? (
+                <p className="mb-2 text-sm text-[var(--text-muted)]">{ru.chats.uploading}</p>
+              ) : null}
+              <div className="flex min-w-0 items-end gap-2 md:gap-3">
+                <label
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-xl font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)] ${
+                    isUploadingMedia ? "cursor-wait opacity-60" : "cursor-pointer"
+                  }`}
+                  title={ru.chats.attachFile}
+                >
+                  <input
+                    accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/webm,application/pdf"
+                    className="sr-only"
+                    disabled={isUploadingMedia}
+                    onChange={onMediaChange}
+                    type="file"
+                  />
+                  <span aria-hidden="true">+</span>
+                </label>
+                <textarea
+                  className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                  onChange={(event) => onMessageTextChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  placeholder={
+                    selectedChat.type === "channel"
+                      ? ru.chats.postPlaceholder
+                      : ru.chats.messagePlaceholder
                   }
-                }}
-                placeholder={ru.chats.messagePlaceholder}
-                value={messageText}
-              />
-              <button
-                className="h-11 shrink-0 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
-                disabled={isSending || isUploadingMedia || !messageText.trim()}
-                type="submit"
-              >
-                {isSending ? ru.chats.sending : ru.chats.send}
-              </button>
+                  value={messageText}
+                />
+                <button
+                  className="h-11 shrink-0 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
+                  disabled={isSending || isUploadingMedia || !messageText.trim()}
+                  type="submit"
+                >
+                  {isSending ? ru.chats.sending : ru.chats.send}
+                </button>
+                {canManageGroup ? (
+                  <button
+                    className="h-11 shrink-0 rounded-md border border-[var(--border-soft)] px-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
+                    onClick={onMentionAll}
+                    type="button"
+                  >
+                    @all
+                  </button>
+                ) : null}
+              </div>
+            </form>
+          ) : (
+            <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] text-center text-sm text-[var(--text-muted)]">
+              {ru.chats.channelReadOnly}
             </div>
-          </form>
+          )}
         </motion.div>
       ) : (
         <div className="flex flex-1 items-center justify-center px-6 text-center">
           <div>
-            <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-[var(--panel-bg)] text-2xl font-semibold text-[var(--accent)]">
-              L
-            </div>
+            <LinkaIcon className="mx-auto mb-5" size={64} />
             <h1 className="text-2xl font-semibold text-[var(--text-main)]">
               {ru.chats.chooseChat}
             </h1>
             <p className="mt-2 max-w-sm text-sm text-[var(--text-muted)]">
               {ru.chats.chooseChatHint}
             </p>
+            <RandomEmptyGif className="mt-5" />
           </div>
         </div>
       )}
+      <AnimatePresence>
+        {selectedChat && isGroupSettingsOpen ? (
+          <GroupSettingsPanel
+            chat={selectedChat}
+            isOwner={isGroupOwner}
+            isSaving={isSavingGroupSettings}
+            onAddMembers={onAddGroupMembers}
+            onAvatarChange={onGroupAvatarChange}
+            onClose={onCloseGroupSettings}
+            onOpenProfile={onOpenProfile}
+            onSaveTitle={onSaveGroupTitle}
+            onUpdateRole={onUpdateGroupRole}
+            onWallpaperChange={onGroupWallpaperChange}
+          />
+        ) : null}
+      </AnimatePresence>
     </motion.section>
   );
 }
@@ -1427,6 +2346,286 @@ function MessageSkeleton() {
   );
 }
 
+function GroupSettingsPanel({
+  chat,
+  isOwner,
+  isSaving,
+  onAddMembers,
+  onAvatarChange,
+  onClose,
+  onOpenProfile,
+  onSaveTitle,
+  onUpdateRole,
+  onWallpaperChange,
+}: {
+  chat: Chat;
+  isOwner: boolean;
+  isSaving: boolean;
+  onAddMembers: (memberIds: string[]) => void;
+  onAvatarChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onClose: () => void;
+  onOpenProfile: (username: string) => void;
+  onSaveTitle: (title: string) => void;
+  onUpdateRole: (userId: string, role: "admin" | "member") => void;
+  onWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
+}) {
+  const [title, setTitle] = useState(chat.title ?? "");
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<AuthUser[]>([]);
+  const [selectedUsers, setSelectedUsers] = useState<AuthUser[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    setTitle(chat.title ?? "");
+  }, [chat.title]);
+
+  useEffect(() => {
+    const normalizedQuery = query.trim();
+
+    if (!normalizedQuery) {
+      setResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    let isActive = true;
+    const timeoutId = window.setTimeout(async () => {
+      setIsSearching(true);
+
+      try {
+        const users = await searchUsers(normalizedQuery);
+        const existingIds = new Set(chat.members.map((member) => member.user.id));
+        const selectedIds = new Set(selectedUsers.map((user) => user.id));
+
+        if (isActive) {
+          setResults(
+            users.filter(
+              (user) => !existingIds.has(user.id) && !selectedIds.has(user.id),
+            ),
+          );
+        }
+      } catch {
+        if (isActive) {
+          setResults([]);
+        }
+      } finally {
+        if (isActive) {
+          setIsSearching(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timeoutId);
+    };
+  }, [chat.members, query, selectedUsers]);
+
+  function handleAddSelectedMembers() {
+    if (!selectedUsers.length) {
+      return;
+    }
+
+    onAddMembers(selectedUsers.map((user) => user.id));
+    setSelectedUsers([]);
+    setQuery("");
+    setResults([]);
+  }
+
+  return (
+    <motion.aside
+      animate={{ opacity: 1, x: 0 }}
+      className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col border-l border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/30"
+      exit={{ opacity: 0, x: 32 }}
+      initial={{ opacity: 0, x: 32 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+    >
+      <header className="flex h-[64px] items-center gap-3 border-b border-[var(--border-soft)] px-4">
+        <ShieldCheck className="text-[var(--accent)]" size={21} />
+        <h2 className="min-w-0 flex-1 truncate text-[16px] font-semibold">
+          {ru.chats.groupSettings}
+        </h2>
+        <button
+          aria-label="Закрыть"
+          className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+          onClick={onClose}
+          type="button"
+        >
+          <X size={20} />
+        </button>
+      </header>
+
+      <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
+        <section className="space-y-3">
+          <label className="block">
+            <span className="mb-2 block text-sm font-medium text-[var(--text-muted)]">
+              {ru.chats.sharedChatTitle}
+            </span>
+            <input
+              className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+              disabled={isSaving}
+              maxLength={80}
+              onChange={(event) => setTitle(event.target.value)}
+              value={title}
+            />
+          </label>
+          <button
+            className="h-10 rounded-md bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
+            disabled={isSaving || !title.trim() || title.trim() === (chat.title ?? "")}
+            onClick={() => onSaveTitle(title)}
+            type="button"
+          >
+            {ru.chats.save}
+          </button>
+        </section>
+
+        <section className="grid grid-cols-2 gap-3">
+          <label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-sm font-medium text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]">
+            <Camera size={17} />
+            {ru.chats.groupAvatar}
+            <input
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              disabled={isSaving}
+              onChange={onAvatarChange}
+              type="file"
+            />
+          </label>
+          <label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-sm font-medium text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]">
+            <Image size={17} />
+            {ru.chats.chatWallpaper}
+            <input
+              accept="image/jpeg,image/png,image/webp"
+              className="sr-only"
+              disabled={isSaving}
+              onChange={onWallpaperChange}
+              type="file"
+            />
+          </label>
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-sm font-semibold text-[var(--text-main)]">
+            {ru.chats.addMembers}
+          </h3>
+          <input
+            className="h-10 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-3 text-sm text-[var(--text-main)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+            disabled={isSaving}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder={ru.chats.searchUsers}
+            type="search"
+            value={query}
+          />
+          {selectedUsers.length ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {selectedUsers.map((user) => (
+                <button
+                  className="rounded-full bg-[var(--active-soft)] px-2.5 py-1 text-sm"
+                  key={user.id}
+                  onClick={() =>
+                    setSelectedUsers((current) =>
+                      current.filter((item) => item.id !== user.id),
+                    )
+                  }
+                  type="button"
+                >
+                  {getUserDisplayName(user)}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="mt-2 max-h-44 overflow-y-auto rounded-md border border-[var(--border-soft)]">
+            {isSearching ? (
+              <StateMessage>{ru.chats.searching}</StateMessage>
+            ) : results.length ? (
+              results.map((user) => (
+                <button
+                  className="flex w-full items-center gap-3 border-b border-[var(--border-soft)] px-3 py-2 text-left transition last:border-b-0 hover:bg-[var(--hover-soft)]"
+                  key={user.id}
+                  onClick={() => setSelectedUsers((current) => [...current, user])}
+                  type="button"
+                >
+                  <Avatar avatarUrl={user.avatarUrl} label={getUserDisplayName(user)} />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">
+                      {getUserDisplayName(user)}
+                    </span>
+                    <span className="block truncate text-xs text-[var(--text-muted)]">
+                      @{user.username}
+                    </span>
+                  </span>
+                </button>
+              ))
+            ) : (
+              <StateMessage>{ru.chats.searchUsersHint}</StateMessage>
+            )}
+          </div>
+          <button
+            className="mt-2 h-10 w-full rounded-md bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
+            disabled={isSaving || !selectedUsers.length}
+            onClick={handleAddSelectedMembers}
+            type="button"
+          >
+            {ru.chats.addMembers}
+          </button>
+        </section>
+
+        <section>
+          <h3 className="mb-2 text-sm font-semibold text-[var(--text-main)]">
+            {ru.chats.members}
+          </h3>
+          <div className="divide-y divide-[var(--border-soft)] rounded-md border border-[var(--border-soft)]">
+            {chat.members.map((member) => {
+              const canToggleRole =
+                isOwner && !["owner", "subscriber"].includes(member.role);
+
+              return (
+                <div className="flex items-center gap-3 px-3 py-2" key={member.user.id}>
+                  <button
+                    className="shrink-0"
+                    onClick={() => onOpenProfile(member.user.username)}
+                    type="button"
+                  >
+                    <Avatar
+                      avatarUrl={member.user.avatarUrl}
+                      label={getUserDisplayName(member.user)}
+                    />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">
+                      {getUserDisplayName(member.user)}
+                    </p>
+                    <p className="truncate text-xs text-[var(--text-muted)]">
+                      @{member.user.username} · {getRoleLabel(member.role)}
+                    </p>
+                  </div>
+                  {canToggleRole ? (
+                    <button
+                      className="h-8 rounded-md px-2 text-xs font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
+                      disabled={isSaving}
+                      onClick={() =>
+                        onUpdateRole(
+                          member.user.id,
+                          member.role === "admin" ? "member" : "admin",
+                        )
+                      }
+                      type="button"
+                    >
+                      {member.role === "admin"
+                        ? ru.chats.removeAdmin
+                        : ru.chats.makeAdmin}
+                    </button>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+    </motion.aside>
+  );
+}
+
 function DateSeparator({ value }: { value: string }) {
   return (
     <div className="sticky top-2 z-[1] my-3 flex justify-center">
@@ -1438,14 +2637,46 @@ function DateSeparator({ value }: { value: string }) {
 }
 
 function MessageBubble({
+  canDelete,
+  chatType,
+  deletingMessageId,
   isOwn,
   message,
+  onDelete,
+  onOpenProfile,
 }: {
+  canDelete: boolean;
+  chatType: ChatType;
+  deletingMessageId: string | null;
   isOwn: boolean;
   message: Message;
+  onDelete: (message: Message) => void;
+  onOpenProfile: (username: string) => void;
 }) {
+  const showSender = !isOwn && chatType !== "private";
+  const isDeleted = Boolean(message.deletedAt);
+
   return (
     <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
+      {showSender ? (
+        <button
+          className="mr-2 mt-1 h-8 w-8 shrink-0 overflow-hidden rounded-full bg-[var(--input-bg)] text-xs font-semibold text-[var(--accent)]"
+          onClick={() => onOpenProfile(message.sender.username)}
+          title={`@${message.sender.username}`}
+          type="button"
+        >
+          {message.sender.avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              alt=""
+              className="h-full w-full object-cover"
+              src={resolveUploadUrl(message.sender.avatarUrl)}
+            />
+          ) : (
+            getUserDisplayName(message.sender).slice(0, 1).toUpperCase()
+          )}
+        </button>
+      ) : null}
       <div
         className={`max-w-[86%] px-3 py-2 text-[15px] leading-5 shadow-sm md:max-w-[68%] ${
           isOwn
@@ -1453,8 +2684,21 @@ function MessageBubble({
             : "rounded-2xl rounded-bl-md border border-[var(--border-soft)] bg-[var(--panel-bg)] text-[var(--text-main)]"
         }`}
       >
-        <MessageMedia message={message} />
-        {message.text ? (
+        {showSender ? (
+          <button
+            className="mb-1 block max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
+            onClick={() => onOpenProfile(message.sender.username)}
+            type="button"
+          >
+            {getUserDisplayName(message.sender)}
+          </button>
+        ) : null}
+        {isDeleted ? (
+          <p className="italic opacity-75">{ru.chats.messageDeleted}</p>
+        ) : (
+          <MessageMedia message={message} />
+        )}
+        {!isDeleted && message.text ? (
           <p className="whitespace-pre-wrap break-words">{message.text}</p>
         ) : null}
         <p
@@ -1464,6 +2708,18 @@ function MessageBubble({
         >
           <span>{formatMessageTime(message.createdAt)}</span>
           {isOwn ? <MessageStatus status={getMessageStatus(message)} /> : null}
+          {canDelete && !isDeleted ? (
+            <button
+              aria-label={ru.chats.deleteMessage}
+              className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-current opacity-75 transition hover:bg-black/10 hover:opacity-100 disabled:cursor-wait disabled:opacity-40"
+              disabled={deletingMessageId === message.id}
+              onClick={() => onDelete(message)}
+              title={ru.chats.deleteMessage}
+              type="button"
+            >
+              <Trash2 size={13} />
+            </button>
+          ) : null}
         </p>
       </div>
     </div>
@@ -1599,6 +2855,65 @@ function getUserDisplayName(user: {
   return [user.nameEmoji, name].filter(Boolean).join(" ");
 }
 
+function getChatTitle(chat: Chat) {
+  if (chat.type === "private") {
+    return chat.partner ? getUserDisplayName(chat.partner) : ru.chats.privateChat;
+  }
+
+  return chat.title || (chat.type === "channel" ? ru.chats.channel : ru.chats.group);
+}
+
+function getChatSubtitle(chat: Chat) {
+  if (chat.type === "private") {
+    return chat.partner ? `@${chat.partner.username}` : ru.chats.noParticipant;
+  }
+
+  if (chat.type === "channel") {
+    return ru.chats.channel;
+  }
+
+  return ru.chats.membersCount(chat.memberCount);
+}
+
+function getEmptyChatTitle(chat: Chat) {
+  if (chat.type === "private" && chat.partner) {
+    return ru.chats.chatWith(chat.partner.username);
+  }
+
+  return getChatTitle(chat);
+}
+
+function canPostInChat(chat: Chat | null) {
+  if (!chat) {
+    return false;
+  }
+
+  return chat.type !== "channel" || chat.currentUserRole === "owner";
+}
+
+function canManageSelectedGroup(chat: Chat | null) {
+  return (
+    chat?.type === "group" &&
+    ["owner", "admin"].includes(chat.currentUserRole ?? "")
+  );
+}
+
+function getRoleLabel(role: string) {
+  if (role === "owner") {
+    return ru.chats.owner;
+  }
+
+  if (role === "admin") {
+    return ru.chats.admin;
+  }
+
+  if (role === "subscriber") {
+    return ru.chats.subscriber;
+  }
+
+  return ru.chats.member;
+}
+
 function sortChatsByLastMessage(chats: Chat[]) {
   return [...chats].sort((left, right) => {
     const leftTime = left.lastMessageAt ?? left.updatedAt;
@@ -1610,7 +2925,7 @@ function sortChatsByLastMessage(chats: Chat[]) {
 
 function formatLastMessagePreview(chat: Chat, messagePreviewEnabled: boolean) {
   if (!chat.lastMessage) {
-    return chat.partner ? `@${chat.partner.username}` : ru.chats.noParticipant;
+    return getChatSubtitle(chat);
   }
 
   if (!messagePreviewEnabled) {
@@ -1618,7 +2933,13 @@ function formatLastMessagePreview(chat: Chat, messagePreviewEnabled: boolean) {
   }
 
   if (chat.lastMessage.text?.trim()) {
-    return chat.lastMessage.text.trim();
+    const text = chat.lastMessage.text.trim();
+
+    if (chat.type !== "private") {
+      return `${getUserDisplayName(chat.lastMessage.sender)}: ${text}`;
+    }
+
+    return text;
   }
 
   if (chat.lastMessage.mediaType === "image") {

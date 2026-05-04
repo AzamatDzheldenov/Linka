@@ -22,6 +22,7 @@ export type UserSettings = {
   messagePreviewEnabled: boolean;
   pushEnabled: boolean;
   soundEnabled: boolean;
+  requireGroupInviteApproval: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -35,6 +36,7 @@ export type UpdateUserSettingsInput = Partial<
     | "messagePreviewEnabled"
     | "pushEnabled"
     | "soundEnabled"
+    | "requireGroupInviteApproval"
   >
 >;
 

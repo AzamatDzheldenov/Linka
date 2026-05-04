@@ -45,6 +45,38 @@ export const ru = {
   chats: {
     searchUsers: "Поиск пользователей",
     searchUsersHint: "Найдите пользователя, чтобы начать приватный чат.",
+    createChat: "Создать чат",
+    createGroup: "Создать группу",
+    createChannel: "Создать канал",
+    newGroup: "Новая группа",
+    newChannel: "Новый канал",
+    group: "Группа",
+    channel: "Канал",
+    groupCreationHint: "Добавьте людей, чтобы начать общий чат.",
+    channelCreationHint: "Добавьте подписчиков для публикаций.",
+    sharedChatTitle: "Название",
+    groupTitlePlaceholder: "Название группы",
+    channelTitlePlaceholder: "Название канала",
+    addMembers: "Участники",
+    members: "Участники",
+    officialInvite: "Linka",
+    inviteToGroup: (groupTitle: string, inviterName: string) =>
+      `${inviterName} приглашает вас в группу «${groupTitle}».`,
+    accept: "Принять",
+    decline: "Отклонить",
+    groupSettings: "Настройки группы",
+    groupAvatar: "Аватарка",
+    chatWallpaper: "Обои",
+    save: "Сохранить",
+    makeAdmin: "Назначить",
+    removeAdmin: "Снять",
+    owner: "владелец",
+    admin: "админ",
+    member: "участник",
+    subscriber: "подписчик",
+    create: "Создать",
+    creating: "Создаем...",
+    cancel: "Отмена",
     loadingChats: "Загружаем чаты...",
     loadingMessages: "Загружаем сообщения...",
     searching: "Ищем...",
@@ -59,6 +91,10 @@ export const ru = {
     chatWith: (username: string) => `Чат с @${username}`,
     firstMessageHint: "Напишите первое сообщение в Linka.",
     messagePlaceholder: "Сообщение",
+    postPlaceholder: "Публикация",
+    channelReadOnly: "В этом канале публикует только автор.",
+    messageDeleted: "Сообщение удалено",
+    deleteMessage: "Удалить сообщение",
     send: "Отправить",
     sending: "Отправка...",
     back: "Назад",
@@ -74,10 +110,16 @@ export const ru = {
     statusSent: "отправлено",
     statusDelivered: "доставлено",
     statusRead: "прочитано",
+    membersCount: (count: number) =>
+      `${count} ${getRussianPlural(count, ["участник", "участника", "участников"])}`,
     errors: {
       loadChats: "Не удалось загрузить чаты.",
       searchUsers: "Не удалось найти пользователей.",
       createChat: "Не удалось создать чат.",
+      createSharedChat: "Не удалось создать группу или канал. Проверьте название и участников.",
+      respondInvite: "Не удалось обработать приглашение.",
+      updateGroup: "Не удалось обновить настройки группы.",
+      deleteMessage: "Не удалось удалить сообщение.",
       loadMessages: "Не удалось загрузить сообщения.",
       realtimeConnection: "Не удалось подключиться к realtime.",
       realtimeNotReady: "Realtime-подключение еще не готово.",
@@ -87,3 +129,23 @@ export const ru = {
     },
   },
 } as const;
+
+function getRussianPlural(count: number, forms: [string, string, string]) {
+  const absoluteCount = Math.abs(count);
+  const lastTwoDigits = absoluteCount % 100;
+  const lastDigit = absoluteCount % 10;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+    return forms[2];
+  }
+
+  if (lastDigit === 1) {
+    return forms[0];
+  }
+
+  if (lastDigit >= 2 && lastDigit <= 4) {
+    return forms[1];
+  }
+
+  return forms[2];
+}

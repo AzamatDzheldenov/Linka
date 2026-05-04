@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useState } from "react";
+import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
 import { checkUsernameAvailability, register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
 import { ru } from "@/lib/i18n/ru";
@@ -101,12 +102,20 @@ export default function RegisterPage() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-[#0e1621] px-4 py-10 text-[#f5f8fb]">
+    <main className="relative flex min-h-screen items-center justify-center bg-[#0e1621] px-4 py-10 text-[#f5f8fb]">
+      <LinkaBrand
+        className="absolute left-4 top-4 sm:left-6 sm:top-6"
+        iconSize={38}
+        priority
+        textClassName="text-white"
+      />
       <section className="w-full max-w-[420px] rounded-lg border border-white/5 bg-[#17212b] px-6 py-7 shadow-2xl shadow-black/30 sm:px-8 sm:py-8">
         <div className="mb-7 text-center">
-          <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-[#2aabee] text-2xl font-semibold text-white shadow-lg shadow-[#2aabee]/20">
-            L
-          </div>
+          <LinkaIcon
+            className="mx-auto mb-4 shadow-lg shadow-[#2aabee]/20"
+            priority
+            size={56}
+          />
           <h1 className="text-2xl font-semibold tracking-normal text-white">
             {ru.auth.registerTitle}
           </h1>

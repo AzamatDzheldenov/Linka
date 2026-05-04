@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -57,6 +58,21 @@ export class MessagesController {
     @Param("chatId") chatId: string,
   ) {
     return this.messagesService.getMessages(request.user.id, chatId);
+  }
+
+  @Delete("messages/:messageId")
+  async deleteMessage(
+    @Req() request: AuthenticatedRequest,
+    @Param("chatId") chatId: string,
+    @Param("messageId") messageId: string,
+  ) {
+    const message = await this.messagesService.deleteMessage(
+      request.user.id,
+      chatId,
+      messageId,
+    );
+    this.messagesEventsService.emitMessageUpdated(chatId, message);
+    return message;
   }
 
   @Post("media")

@@ -1,18 +1,26 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
 import { PrismaService } from "../prisma/prisma.service";
+import { AddChatMembersDto } from "./dto/add-chat-members.dto";
+import { CreateSharedChatDto } from "./dto/create-shared-chat.dto";
+import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
+import { UpdateChatSettingsDto } from "./dto/update-chat-settings.dto";
 
 type ChatWithMembers = {
   id: string;
   type: string;
   title: string | null;
+  avatarUrl: string | null;
+  wallpaperUrl: string | null;
   createdAt: Date;
   updatedAt: Date;
   members: Array<{
     userId: string;
+    role: string;
     user: {
       id: string;
       username: string;
@@ -77,6 +85,346 @@ export class ChatsService {
     return this.toChatResponse(chat, currentUserId);
   }
 
+  async createSharedChat(
+    currentUserId: string,
+    type: "group" | "channel",
+    dto: CreateSharedChatDto,
+  ) {
+    const title = dto.title.trim();
+
+    if (!title) {
+      throw new BadRequestException("Chat title is required");
+    }
+
+    const memberIds = [...new Set(dto.memberIds)].filter(
+      (memberId) => memberId !== currentUserId,
+    );
+
+    if (!memberIds.length) {
+      throw new BadRequestException("Select at least one user");
+    }
+
+    const existingUsers = await this.prisma.user.findMany({
+      where: { id: { in: memberIds } },
+      select: {
+        id: true,
+        settings: {
+          select: {
+            requireGroupInviteApproval: true,
+          },
+        },
+      },
+    });
+
+    if (existingUsers.length !== memberIds.length) {
+      throw new NotFoundException("One or more users were not found");
+    }
+
+    const directMemberIds =
+      type === "group"
+        ? existingUsers
+            .filter((user) => user.settings?.requireGroupInviteApproval !== true)
+            .map((user) => user.id)
+        : memberIds;
+    const invitedMemberIds =
+      type === "group"
+        ? existingUsers
+            .filter((user) => user.settings?.requireGroupInviteApproval === true)
+            .map((user) => user.id)
+        : [];
+
+    const chat = await this.prisma.chat.create({
+      data: {
+        type,
+        title,
+        members: {
+          create: [
+            { userId: currentUserId, role: "owner" },
+            ...directMemberIds.map((memberId) => ({
+              userId: memberId,
+              role: type === "channel" ? "subscriber" : "member",
+            })),
+          ],
+        },
+        invites: {
+          create: invitedMemberIds.map((memberId) => ({
+            inviterId: currentUserId,
+            inviteeId: memberId,
+          })),
+        },
+      },
+      include: this.chatInclude(),
+    });
+
+    return this.toChatResponse(chat, currentUserId);
+  }
+
+  async getPendingInvites(currentUserId: string) {
+    return this.prisma.groupInvite.findMany({
+      where: {
+        inviteeId: currentUserId,
+        status: "pending",
+      },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        createdAt: true,
+        chat: {
+          select: {
+            id: true,
+            type: true,
+            title: true,
+            avatarUrl: true,
+            members: {
+              select: { id: true },
+            },
+          },
+        },
+        inviter: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            nameEmoji: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+  }
+
+  async respondToInvite(
+    currentUserId: string,
+    inviteId: string,
+    status: "accepted" | "declined",
+  ) {
+    const invite = await this.prisma.groupInvite.findFirst({
+      where: {
+        id: inviteId,
+        inviteeId: currentUserId,
+        status: "pending",
+      },
+      select: {
+        id: true,
+        chatId: true,
+      },
+    });
+
+    if (!invite) {
+      throw new NotFoundException("Invite not found");
+    }
+
+    if (status === "accepted") {
+      await this.prisma.$transaction([
+        this.prisma.chatMember.create({
+          data: {
+            chatId: invite.chatId,
+            userId: currentUserId,
+            role: "member",
+          },
+        }),
+        this.prisma.groupInvite.update({
+          where: { id: invite.id },
+          data: {
+            status,
+            respondedAt: new Date(),
+          },
+        }),
+      ]);
+
+      const chat = await this.prisma.chat.findUniqueOrThrow({
+        where: { id: invite.chatId },
+        include: this.chatInclude(),
+      });
+
+      return this.toChatResponse(chat, currentUserId);
+    }
+
+    return this.prisma.groupInvite.update({
+      where: { id: invite.id },
+      data: {
+        status,
+        respondedAt: new Date(),
+      },
+    });
+  }
+
+  async addMembers(
+    currentUserId: string,
+    chatId: string,
+    dto: AddChatMembersDto,
+  ) {
+    await this.assertCanManageChat(currentUserId, chatId);
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { type: true },
+    });
+
+    if (!chat || chat.type === "private") {
+      throw new BadRequestException("Members can only be added to shared chats");
+    }
+
+    const existingMemberships = await this.prisma.chatMember.findMany({
+      where: { chatId },
+      select: { userId: true },
+    });
+    const existingIds = new Set(existingMemberships.map((member) => member.userId));
+    const memberIds = [...new Set(dto.memberIds)].filter(
+      (memberId) => memberId !== currentUserId && !existingIds.has(memberId),
+    );
+
+    if (!memberIds.length) {
+      const nextChat = await this.prisma.chat.findUniqueOrThrow({
+        where: { id: chatId },
+        include: this.chatInclude(),
+      });
+      return this.toChatResponse(nextChat, currentUserId);
+    }
+
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: memberIds } },
+      select: {
+        id: true,
+        settings: { select: { requireGroupInviteApproval: true } },
+      },
+    });
+
+    const directMemberIds =
+      chat.type === "group"
+        ? users
+            .filter((user) => user.settings?.requireGroupInviteApproval !== true)
+            .map((user) => user.id)
+        : memberIds;
+    const invitedMemberIds =
+      chat.type === "group"
+        ? users
+            .filter((user) => user.settings?.requireGroupInviteApproval === true)
+            .map((user) => user.id)
+        : [];
+
+    await this.prisma.$transaction([
+      ...(directMemberIds.length
+        ? [
+            this.prisma.chatMember.createMany({
+              data: directMemberIds.map((memberId) => ({
+                chatId,
+                userId: memberId,
+                role: chat.type === "channel" ? "subscriber" : "member",
+              })),
+              skipDuplicates: true,
+            }),
+          ]
+        : []),
+      ...(invitedMemberIds.length
+        ? [
+            this.prisma.groupInvite.createMany({
+              data: invitedMemberIds.map((memberId) => ({
+                chatId,
+                inviterId: currentUserId,
+                inviteeId: memberId,
+              })),
+              skipDuplicates: true,
+            }),
+          ]
+        : []),
+    ]);
+
+    const nextChat = await this.prisma.chat.findUniqueOrThrow({
+      where: { id: chatId },
+      include: this.chatInclude(),
+    });
+    return this.toChatResponse(nextChat, currentUserId);
+  }
+
+  async updateChatSettings(
+    currentUserId: string,
+    chatId: string,
+    dto: UpdateChatSettingsDto,
+  ) {
+    await this.assertCanManageChat(currentUserId, chatId);
+
+    const data: {
+      title?: string;
+      avatarUrl?: string | null;
+      wallpaperUrl?: string | null;
+    } = {};
+
+    if (dto.title !== undefined) {
+      const title = dto.title.trim();
+      if (!title) {
+        throw new BadRequestException("Chat title is required");
+      }
+      data.title = title;
+    }
+
+    if (dto.avatarUrl !== undefined) {
+      data.avatarUrl = dto.avatarUrl.trim() || null;
+    }
+
+    if (dto.wallpaperUrl !== undefined) {
+      data.wallpaperUrl = dto.wallpaperUrl.trim() || null;
+    }
+
+    const chat = await this.prisma.chat.update({
+      where: { id: chatId },
+      data,
+      include: this.chatInclude(),
+    });
+
+    return this.toChatResponse(chat, currentUserId);
+  }
+
+  async updateMemberRole(
+    currentUserId: string,
+    chatId: string,
+    dto: UpdateChatMemberRoleDto,
+  ) {
+    await this.assertOwner(currentUserId, chatId);
+
+    if (currentUserId === dto.userId) {
+      throw new BadRequestException("Owner role cannot be changed");
+    }
+
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: dto.userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: { select: { type: true } },
+      },
+    });
+
+    if (!membership || membership.chat.type !== "group") {
+      throw new BadRequestException("Only group members can become admins");
+    }
+
+    if (membership.role === "owner") {
+      throw new BadRequestException("Owner role cannot be changed");
+    }
+
+    await this.prisma.chatMember.update({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: dto.userId,
+        },
+      },
+      data: { role: dto.role },
+    });
+
+    const chat = await this.prisma.chat.findUniqueOrThrow({
+      where: { id: chatId },
+      include: this.chatInclude(),
+    });
+
+    return this.toChatResponse(chat, currentUserId);
+  }
+
   async getChats(currentUserId: string) {
     const memberships = await this.prisma.chatMember.findMany({
       where: { userId: currentUserId },
@@ -124,9 +472,13 @@ export class ChatsService {
   }
 
   private async toChatResponse(chat: ChatWithMembers, currentUserId: string) {
-    const partner = chat.members.find(
-      (member) => member.userId !== currentUserId,
-    )?.user;
+    const currentMember = chat.members.find(
+      (member) => member.userId === currentUserId,
+    );
+    const partner =
+      chat.type === "private"
+        ? chat.members.find((member) => member.userId !== currentUserId)?.user
+        : null;
     const lastMessage = chat.messages[0] ?? null;
     const unreadCount = await this.prisma.messageReceipt.count({
       where: {
@@ -144,9 +496,23 @@ export class ChatsService {
       id: chat.id,
       type: chat.type,
       title: chat.title,
+      avatarUrl: chat.avatarUrl,
+      wallpaperUrl: chat.wallpaperUrl,
       createdAt: chat.createdAt,
       updatedAt: chat.updatedAt,
       unreadCount,
+      memberCount: chat.members.length,
+      currentUserRole: currentMember?.role ?? null,
+      members: chat.members.map((member) => ({
+        role: member.role,
+        user: {
+          id: member.user.id,
+          username: member.user.username,
+          displayName: member.user.displayName,
+          nameEmoji: member.user.nameEmoji,
+          avatarUrl: member.user.avatarUrl,
+        },
+      })),
       lastMessageAt: lastMessage?.createdAt ?? null,
       lastMessage: lastMessage
         ? {
@@ -208,5 +574,54 @@ export class ChatsService {
         },
       },
     } as const;
+  }
+
+  async assertCanManageChat(userId: string, chatId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: { select: { type: true } },
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException("You are not a member of this chat");
+    }
+
+    if (
+      membership.chat.type !== "group" ||
+      !["owner", "admin"].includes(membership.role)
+    ) {
+      throw new ForbiddenException("Only group admins can manage this chat");
+    }
+  }
+
+  private async assertOwner(userId: string, chatId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: { select: { type: true } },
+      },
+    });
+
+    if (
+      !membership ||
+      membership.chat.type !== "group" ||
+      membership.role !== "owner"
+    ) {
+      throw new ForbiddenException("Only the group owner can change admins");
+    }
   }
 }

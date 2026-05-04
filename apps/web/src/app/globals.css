@@ -45,6 +45,15 @@ body {
   margin: 0;
   background: var(--app-bg);
   color: var(--text-main);
+  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+}
+
+h1,
+h2,
+h3,
+.font-heading,
+.font-logo {
+  font-family: var(--font-manrope), var(--font-inter), Arial, Helvetica, sans-serif;
 }
 
 html[data-text-size="small"] {

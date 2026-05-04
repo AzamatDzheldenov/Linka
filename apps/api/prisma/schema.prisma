@@ -24,6 +24,8 @@ model User {
   sentMessages    Message[]      @relation("MessageSender")
   messageReceipts MessageReceipt[]
   settings       UserSettings?
+  groupInvites   GroupInvite[]   @relation("GroupInviteInvitee")
+  sentGroupInvites GroupInvite[] @relation("GroupInviteInviter")
 }
 
 model UserSettings {
@@ -35,6 +37,7 @@ model UserSettings {
   messagePreviewEnabled    Boolean  @default(true)
   pushEnabled              Boolean  @default(false)
   soundEnabled             Boolean  @default(true)
+  requireGroupInviteApproval Boolean @default(false)
   createdAt                DateTime @default(now())
   updatedAt                DateTime @updatedAt
 
@@ -57,10 +60,13 @@ model Chat {
   id        String       @id @default(uuid()) @db.Uuid
   type      String       @default("private")
   title     String?
+  avatarUrl String?
+  wallpaperUrl String?
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
   members   ChatMember[]
   messages  Message[]
+  invites   GroupInvite[]
 }
 
 model ChatMember {
@@ -113,4 +119,23 @@ model MessageReceipt {
   @@unique([messageId, userId])
   @@index([userId])
   @@index([messageId])
+}
+
+model GroupInvite {
+  id        String    @id @default(uuid()) @db.Uuid
+  chatId    String    @db.Uuid
+  inviterId String    @db.Uuid
+  inviteeId String    @db.Uuid
+  status    String    @default("pending")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  respondedAt DateTime?
+
+  chat    Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  inviter User @relation("GroupInviteInviter", fields: [inviterId], references: [id], onDelete: Cascade)
+  invitee User @relation("GroupInviteInvitee", fields: [inviteeId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, inviteeId])
+  @@index([inviteeId, status])
+  @@index([chatId])
 }

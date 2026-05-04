@@ -48,3 +48,9 @@ export async function sendMediaMessage(chatId: string, file: File, text?: string
     body: formData,
   });
 }
+
+export async function deleteMessage(chatId: string, messageId: string) {
+  return apiRequest<Message>(`/chats/${chatId}/messages/${messageId}`, {
+    method: "DELETE",
+  });
+}

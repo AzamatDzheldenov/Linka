@@ -39,7 +39,7 @@ export class MessagesService {
   }
 
   async createMessage(userId: string, dto: SendMessageDto) {
-    await this.assertChatMember(userId, dto.chatId);
+    await this.assertCanSendMessage(userId, dto.chatId);
 
     return this.prisma.$transaction(async (tx) => {
       const message = await tx.message.create({
@@ -74,7 +74,7 @@ export class MessagesService {
   }
 
   async createMediaMessage(userId: string, input: MediaMessageInput) {
-    await this.assertChatMember(userId, input.chatId);
+    await this.assertCanSendMessage(userId, input.chatId);
 
     return this.prisma.$transaction(async (tx) => {
       const text = input.text?.trim() || null;
@@ -119,6 +119,41 @@ export class MessagesService {
     return this.markReceipts(userId, chatId, "read");
   }
 
+  async deleteMessage(userId: string, chatId: string, messageId: string) {
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        chatId,
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        senderId: true,
+      },
+    });
+
+    if (!message) {
+      throw new ForbiddenException("Message not found");
+    }
+
+    if (message.senderId !== userId) {
+      await this.assertCanModerateMessages(userId, chatId);
+    } else {
+      await this.assertChatMember(userId, chatId);
+    }
+
+    return this.prisma.message.update({
+      where: { id: messageId },
+      data: {
+        deletedAt: new Date(),
+        text: null,
+        mediaUrl: null,
+        mediaType: null,
+      },
+      select: this.messageSelect(),
+    });
+  }
+
   async getChatMemberIds(chatId: string) {
     const members = await this.prisma.chatMember.findMany({
       where: { chatId },
@@ -141,6 +176,60 @@ export class MessagesService {
 
     if (!membership) {
       throw new ForbiddenException("You are not a member of this chat");
+    }
+  }
+
+  private async assertCanSendMessage(userId: string, chatId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: {
+          select: {
+            type: true,
+          },
+        },
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException("You are not a member of this chat");
+    }
+
+    if (membership.chat.type === "channel" && membership.role !== "owner") {
+      throw new ForbiddenException("Only the channel owner can publish");
+    }
+  }
+
+  private async assertCanModerateMessages(userId: string, chatId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: {
+          select: {
+            type: true,
+          },
+        },
+      },
+    });
+
+    if (
+      !membership ||
+      membership.chat.type !== "group" ||
+      !["owner", "admin"].includes(membership.role)
+    ) {
+      throw new ForbiddenException("Only group admins can delete messages");
     }
   }
 

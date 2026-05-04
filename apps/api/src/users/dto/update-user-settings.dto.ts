@@ -24,4 +24,8 @@ export class UpdateUserSettingsDto {
   @IsOptional()
   @IsBoolean({ message: "Sound setting must be boolean" })
   soundEnabled?: boolean;
+
+  @IsOptional()
+  @IsBoolean({ message: "Group invite approval setting must be boolean" })
+  requireGroupInviteApproval?: boolean;
 }
