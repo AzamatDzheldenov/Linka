@@ -1,5 +1,5 @@
 import { AuthUser, getAccessToken, useAuthStore } from "../../store/auth-store";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
 
 declare const process: {
   env: {

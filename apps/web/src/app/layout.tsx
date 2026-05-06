@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Manrope } from "next/font/google";
 import { AppearanceProvider } from "@/providers/appearance-provider";
 import { AuthProvider } from "@/providers/auth-provider";
+import { I18nProvider } from "@/providers/i18n-provider";
 import { ThemeProvider } from "@/providers/theme-provider";
 import "./globals.css";
 
@@ -35,7 +36,9 @@ export default function RootLayout({
       <body className={`${inter.variable} ${manrope.variable}`}>
         <ThemeProvider>
           <AppearanceProvider>
-            <AuthProvider>{children}</AuthProvider>
+            <I18nProvider>
+              <AuthProvider>{children}</AuthProvider>
+            </I18nProvider>
           </AppearanceProvider>
         </ThemeProvider>
       </body>

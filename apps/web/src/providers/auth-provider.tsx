@@ -3,7 +3,8 @@
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode, useEffect, useMemo, useState } from "react";
 import { refresh } from "@/lib/api/auth";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 import { useAuthStore } from "@/store/auth-store";
 
 const publicRoutes = new Set(["/login", "/register"]);
@@ -14,6 +15,7 @@ type AuthProviderProps = {
 };
 
 export function AuthProvider({ children }: AuthProviderProps) {
+  useI18n();
   const pathname = usePathname();
   const router = useRouter();
   const accessToken = useAuthStore((state) => state.accessToken);

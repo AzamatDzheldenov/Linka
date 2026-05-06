@@ -6,8 +6,11 @@ import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
 import { getUserProfile, PublicUserProfile } from "@/lib/api/users";
+import type { Messages } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 
 export default function PublicProfilePage() {
+  const { t: ru } = useI18n();
   const params = useParams<{ username: string }>();
   const username = params.username;
   const [profile, setProfile] = useState<PublicUserProfile | null>(null);
@@ -29,7 +32,7 @@ export default function PublicProfilePage() {
         }
       } catch (error) {
         if (isActive) {
-          setError(getProfileError(error));
+          setError(getProfileError(error, ru));
           setProfile(null);
         }
       } finally {
@@ -48,14 +51,14 @@ export default function PublicProfilePage() {
 
   const fullName = profile
     ? [profile.firstName, profile.lastName].filter(Boolean).join(" ")
-    : "Профиль";
+    : ru.profile.title;
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-main)]">
       <header className="sticky top-0 z-10 border-b border-[var(--border-soft)] bg-[var(--panel-bg)]/95 backdrop-blur">
         <div className="mx-auto flex h-16 w-full max-w-3xl items-center gap-3 px-4">
           <Link
-            aria-label="Назад к чатам"
+            aria-label={ru.profile.backToChats}
             className="flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             href="/chats"
           >
@@ -63,7 +66,7 @@ export default function PublicProfilePage() {
           </Link>
           <div className="min-w-0">
             <h1 className="truncate text-lg font-semibold">
-              {isLoading ? "Загрузка..." : fullName}
+              {isLoading ? ru.profile.loading : fullName}
             </h1>
             <p className="truncate text-sm text-[var(--text-muted)]">
               @{username}
@@ -94,7 +97,9 @@ export default function PublicProfilePage() {
                   )}
                 </div>
                 <h2 className="mt-4 max-w-full truncate text-2xl font-semibold">
-                  {isLoading ? "Загрузка..." : formatNameWithEmoji(fullName, profile?.nameEmoji)}
+                  {isLoading
+                    ? ru.profile.loading
+                    : formatNameWithEmoji(fullName, profile?.nameEmoji)}
                 </h2>
                 <p className="mt-1 text-sm text-[var(--text-muted)]">
                   {profile ? `@${profile.username}` : ""}
@@ -105,7 +110,7 @@ export default function PublicProfilePage() {
                   </p>
                 ) : (
                   <p className="mt-4 text-[15px] text-[var(--text-muted)]">
-                    О себе пока ничего не указано.
+                    {ru.profile.emptyBio}
                   </p>
                 )}
               </>
@@ -129,10 +134,10 @@ function formatNameWithEmoji(name: string, nameEmoji?: string | null) {
   return [nameEmoji, name].filter(Boolean).join(" ");
 }
 
-function getProfileError(error: unknown) {
+function getProfileError(error: unknown, ru: Messages) {
   if (error instanceof ApiError && error.status === 404) {
-    return "Пользователь не найден.";
+    return ru.profile.userNotFound;
   }
 
-  return "Не удалось загрузить профиль.";
+  return ru.profile.loadError;
 }

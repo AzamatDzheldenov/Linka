@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
 
 type LinkaIconProps = {
   alt?: string;

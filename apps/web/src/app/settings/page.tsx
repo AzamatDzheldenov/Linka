@@ -13,8 +13,11 @@ import {
   Palette,
   Shield,
   Sun,
+  Languages,
   User,
 } from "lucide-react";
+import type { Language } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 import { TextSizeMode, useAppearance } from "@/providers/appearance-provider";
 import { ThemeMode, useTheme } from "@/providers/theme-provider";
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
@@ -46,6 +49,7 @@ const defaultSettings: Omit<UserSettings, "id" | "userId" | "createdAt" | "updat
 };
 
 export default function SettingsPage() {
+  const { language, setLanguage, t: ru } = useI18n();
   const currentUser = useAuthStore((state) => state.currentUser);
   const { theme, setTheme } = useTheme();
   const { compactMode, setCompactMode, setTextSize, textSize } = useAppearance();
@@ -82,7 +86,7 @@ export default function SettingsPage() {
         }
       } catch {
         if (isActive) {
-          setError("Не удалось загрузить настройки.");
+          setError(ru.settings.loadError);
         }
       } finally {
         if (isActive) {
@@ -118,9 +122,11 @@ export default function SettingsPage() {
         bio: profileForm.bio.trim(),
       });
       setProfileForm(toProfileForm(user));
-      setNotice("Профиль сохранен.");
+      setNotice(ru.settings.profileSaved);
     } catch (error) {
-      setError(getSettingsError(error));
+      setError(
+        getSettingsError(error, ru.settings.usernameTaken, ru.settings.saveError),
+      );
     } finally {
       setIsSavingProfile(false);
     }
@@ -140,9 +146,9 @@ export default function SettingsPage() {
 
     try {
       await uploadAvatar(file);
-      setNotice("Аватар обновлен.");
+      setNotice(ru.settings.avatarUpdated);
     } catch {
-      setError("Не удалось обновить аватар.");
+      setError(ru.settings.avatarUpdateError);
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -157,7 +163,7 @@ export default function SettingsPage() {
       const savedSettings = await updateUserSettings(nextSettings);
       setSettings(savedSettings);
     } catch {
-      setError("Не удалось сохранить настройки.");
+      setError(ru.settings.saveError);
     } finally {
       setIsSavingSettings(false);
     }
@@ -173,28 +179,28 @@ export default function SettingsPage() {
   const fullName = currentUser
     ? [currentUser.firstName, currentUser.lastName].filter(Boolean).join(" ") ||
       currentUser.username
-    : "Профиль";
+    : ru.settings.sections.profile;
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-main)]">
       <header className="sticky top-0 z-20 border-b border-[var(--border-soft)] bg-[var(--panel-bg)]/95 backdrop-blur">
         <div className="mx-auto flex h-16 w-full max-w-5xl items-center gap-3 px-4">
           <Link
-            aria-label="Назад к чатам"
+            aria-label={ru.settings.backToChats}
             className="flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             href="/chats"
           >
             <ArrowLeft size={22} />
           </Link>
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold">Настройки</h1>
+            <h1 className="truncate text-lg font-semibold">{ru.settings.title}</h1>
             <p className="truncate text-sm text-[var(--text-muted)]">
-              {currentUser ? `@${currentUser.username}` : "Загрузка..."}
+              {currentUser ? `@${currentUser.username}` : ru.settings.loading}
             </p>
           </div>
           {isSavingSettings ? (
             <span className="ml-auto text-sm text-[var(--text-muted)]">
-              Сохраняем...
+              {ru.settings.saving}
             </span>
           ) : null}
         </div>
@@ -202,14 +208,14 @@ export default function SettingsPage() {
 
       <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
         <section className="space-y-4">
-          <SettingsSection icon={<User size={19} />} title="Профиль">
+          <SettingsSection icon={<User size={19} />} title={ru.settings.sections.profile}>
             <form className="space-y-4" onSubmit={handleProfileSubmit}>
               <div className="flex items-center gap-4">
                 <label
                   className={`group relative shrink-0 rounded-full ${
                     isUploadingAvatar ? "cursor-wait opacity-70" : "cursor-pointer"
                   }`}
-                  title="Обновить аватар"
+                  title={ru.settings.updateAvatar}
                 >
                   <input
                     accept="image/jpeg,image/png,image/webp"
@@ -244,7 +250,7 @@ export default function SettingsPage() {
 
               <div className="grid gap-3 sm:grid-cols-2">
                 <SettingsInput
-                  label="Имя"
+                  label={ru.settings.fields.firstName}
                   maxLength={64}
                   onChange={(value) =>
                     setProfileForm((current) => ({ ...current, firstName: value }))
@@ -253,7 +259,7 @@ export default function SettingsPage() {
                   value={profileForm.firstName}
                 />
                 <SettingsInput
-                  label="Фамилия"
+                  label={ru.settings.fields.lastName}
                   maxLength={64}
                   onChange={(value) =>
                     setProfileForm((current) => ({ ...current, lastName: value }))
@@ -277,7 +283,7 @@ export default function SettingsPage() {
               />
               <label className="block">
                 <span className="mb-2 block text-sm font-medium text-[var(--text-muted)]">
-                  Bio
+                  {ru.settings.fields.bio}
                 </span>
                 <textarea
                   className="min-h-24 w-full resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
@@ -288,7 +294,7 @@ export default function SettingsPage() {
                       bio: event.target.value,
                     }))
                   }
-                  placeholder="Пара строк о себе"
+                  placeholder={ru.settings.fields.bioPlaceholder}
                   value={profileForm.bio}
                 />
               </label>
@@ -298,79 +304,93 @@ export default function SettingsPage() {
                 type="submit"
               >
                 <Check size={18} />
-                {isSavingProfile ? "Сохранение..." : "Сохранить профиль"}
+                {isSavingProfile
+                  ? ru.settings.actions.savingProfile
+                  : ru.settings.actions.saveProfile}
               </button>
             </form>
           </SettingsSection>
         </section>
 
         <section className="space-y-4">
-          <SettingsSection icon={<Palette size={19} />} title="Внешний вид">
+          <SettingsSection icon={<Palette size={19} />} title={ru.settings.sections.appearance}>
             <SegmentedControl
-              label="Тема"
+              label={ru.settings.appearance.theme}
               onChange={(value) => setTheme(value as ThemeMode)}
               options={[
-                { icon: <Sun size={16} />, label: "Light", value: "light" },
-                { icon: <Moon size={16} />, label: "Dark", value: "dark" },
-                { icon: <Monitor size={16} />, label: "System", value: "system" },
+                { icon: <Sun size={16} />, label: ru.settings.appearance.light, value: "light" },
+                { icon: <Moon size={16} />, label: ru.settings.appearance.dark, value: "dark" },
+                { icon: <Monitor size={16} />, label: ru.settings.appearance.system, value: "system" },
               ]}
               value={theme}
             />
             <SegmentedControl
-              label="Размер текста"
+              label={ru.settings.appearance.textSize}
               onChange={(value) => setTextSize(value as TextSizeMode)}
               options={[
-                { label: "Small", value: "small" },
-                { label: "Normal", value: "normal" },
-                { label: "Large", value: "large" },
+                { label: ru.settings.appearance.small, value: "small" },
+                { label: ru.settings.appearance.normal, value: "normal" },
+                { label: ru.settings.appearance.large, value: "large" },
               ]}
               value={textSize}
             />
             <ToggleRow
               checked={compactMode}
-              label="Compact mode"
+              label={ru.settings.appearance.compactMode}
               onChange={setCompactMode}
             />
           </SettingsSection>
 
-          <SettingsSection icon={<Bell size={19} />} title="Уведомления">
+          <SettingsSection icon={<Languages size={19} />} title={ru.settings.sections.language}>
+            <SegmentedControl
+              label={ru.settings.sections.language}
+              onChange={(value) => setLanguage(value as Language)}
+              options={[
+                { label: ru.settings.language.russian, value: "ru" },
+                { label: ru.settings.language.uzbek, value: "uz" },
+              ]}
+              value={language}
+            />
+          </SettingsSection>
+
+          <SettingsSection icon={<Bell size={19} />} title={ru.settings.sections.notifications}>
             <ToggleRow
               checked={settings.pushEnabled}
-              label="Push notifications"
+              label={ru.settings.notifications.push}
               onChange={(value) => updateRemoteSetting("pushEnabled", value)}
             />
             <ToggleRow
               checked={settings.soundEnabled}
-              label="Sound"
+              label={ru.settings.notifications.sound}
               onChange={(value) => updateRemoteSetting("soundEnabled", value)}
             />
             <ToggleRow
               checked={settings.messagePreviewEnabled}
-              label="Message preview"
+              label={ru.settings.notifications.messagePreview}
               onChange={(value) => updateRemoteSetting("messagePreviewEnabled", value)}
             />
           </SettingsSection>
 
-          <SettingsSection icon={<Shield size={19} />} title="Приватность">
+          <SettingsSection icon={<Shield size={19} />} title={ru.settings.sections.privacy}>
             <ToggleRow
               checked={settings.allowSearchByUsername}
-              label="Меня можно найти по username"
+              label={ru.settings.privacy.searchable}
               onChange={(value) => updateRemoteSetting("allowSearchByUsername", value)}
             />
             <ToggleRow
               checked={settings.showOnlineStatus}
               icon={<Eye size={17} />}
-              label="Показывать online статус"
+              label={ru.settings.privacy.onlineStatus}
               onChange={(value) => updateRemoteSetting("showOnlineStatus", value)}
             />
             <ToggleRow
               checked={settings.showReadReceipts}
-              label="Показывать read receipts"
+              label={ru.settings.privacy.readReceipts}
               onChange={(value) => updateRemoteSetting("showReadReceipts", value)}
             />
             <ToggleRow
               checked={settings.requireGroupInviteApproval}
-              label="Спрашивать подтверждение перед добавлением в группы"
+              label={ru.settings.privacy.groupInviteApproval}
               onChange={(value) =>
                 updateRemoteSetting("requireGroupInviteApproval", value)
               }
@@ -550,10 +570,14 @@ function resolveUploadUrl(url: string) {
   return url;
 }
 
-function getSettingsError(error: unknown) {
+function getSettingsError(
+  error: unknown,
+  usernameTakenMessage: string,
+  fallbackMessage: string,
+) {
   if (error instanceof ApiError && error.status === 409) {
-    return "Username уже занят.";
+    return usernameTakenMessage;
   }
 
-  return "Не удалось сохранить настройки.";
+  return fallbackMessage;
 }

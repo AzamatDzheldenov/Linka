@@ -6,9 +6,11 @@ import { FormEvent, useState } from "react";
 import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
 import { login } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 
 export default function LoginPage() {
+  useI18n();
   const router = useRouter();
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");

@@ -6,11 +6,13 @@ import { FormEvent, useEffect, useState } from "react";
 import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
 import { checkUsernameAvailability, register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 
 const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
 
 export default function RegisterPage() {
+  useI18n();
   const router = useRouter();
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -127,14 +129,14 @@ export default function RegisterPage() {
         <form className="space-y-4" onSubmit={handleSubmit}>
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Имя
+              {ru.auth.firstName}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="text"
               value={firstName}
               onChange={(event) => setFirstName(event.target.value)}
-              placeholder="Ваше имя"
+              placeholder={ru.auth.firstNamePlaceholder}
               autoComplete="given-name"
               disabled={isLoading}
               maxLength={64}
@@ -144,14 +146,14 @@ export default function RegisterPage() {
 
           <label className="block">
             <span className="mb-2 block text-sm font-medium text-[#b7c5d2]">
-              Фамилия
+              {ru.auth.lastName}
             </span>
             <input
               className="h-12 w-full rounded-md border border-white/5 bg-[#242f3d] px-4 text-[15px] text-white outline-none transition placeholder:text-[#6f8191] focus:border-[#2aabee] focus:ring-2 focus:ring-[#2aabee]/25"
               type="text"
               value={lastName}
               onChange={(event) => setLastName(event.target.value)}
-              placeholder="Необязательно"
+              placeholder={ru.auth.optionalPlaceholder}
               autoComplete="family-name"
               disabled={isLoading}
               maxLength={64}
@@ -273,7 +275,7 @@ function getUsernameHint(
   status: "idle" | "invalid" | "checking" | "available" | "taken" | "error",
 ) {
   if (status === "idle") {
-    return "3-20 символов: a-z, 0-9 и _";
+    return ru.auth.usernameHints.idle;
   }
 
   if (status === "invalid") {
@@ -281,18 +283,18 @@ function getUsernameHint(
   }
 
   if (status === "checking") {
-    return "Проверяем username...";
+    return ru.auth.usernameHints.checking;
   }
 
   if (status === "available") {
-    return "Username свободен.";
+    return ru.auth.usernameHints.available;
   }
 
   if (status === "taken") {
     return ru.auth.errors.usernameTaken;
   }
 
-  return "Не удалось проверить username.";
+  return ru.auth.usernameHints.error;
 }
 
 function getRegisterError(error: unknown) {

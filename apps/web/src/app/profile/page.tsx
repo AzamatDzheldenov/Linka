@@ -4,7 +4,9 @@ import Link from "next/link";
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { ArrowLeft, Camera, Check, Pencil } from "lucide-react";
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
+import type { Messages } from "@/lib/i18n";
 import { getMe, updateMe, uploadAvatar } from "@/lib/api/users";
+import { useI18n } from "@/providers/i18n-provider";
 import { useAuthStore } from "@/store/auth-store";
 
 type ProfileForm = {
@@ -15,27 +17,29 @@ type ProfileForm = {
   nameEmoji: string;
 };
 
-const NAME_SYMBOLS = [
-  { value: "", label: "Без символа", hint: "Минимально" },
-  { value: "✨", label: "Искра", hint: "Творческий" },
-  { value: "🌙", label: "Луна", hint: "Спокойный" },
-  { value: "☀️", label: "Солнце", hint: "Открытый" },
-  { value: "⚡", label: "Молния", hint: "Энергичный" },
-  { value: "💎", label: "Кристалл", hint: "Стильный" },
-  { value: "🪐", label: "Орбита", hint: "Мечтатель" },
-  { value: "🌿", label: "Лист", hint: "Мягкий" },
-  { value: "🔥", label: "Огонь", hint: "Смелый" },
-  { value: "🎧", label: "Звук", hint: "Музыкальный" },
-  { value: "🖤", label: "Графит", hint: "Лаконичный" },
-  { value: "🪽", label: "Крыло", hint: "Легкий" },
-  { value: "🧿", label: "Оберег", hint: "Загадочный" },
-  { value: "🫧", label: "Пузырь", hint: "Воздушный" },
-  { value: "🌊", label: "Волна", hint: "Гибкий" },
-  { value: "🕊️", label: "Мир", hint: "Теплый" },
-];
+const NAME_SYMBOL_VALUES = [
+  "",
+  "✨",
+  "🌙",
+  "☀️",
+  "⚡",
+  "💎",
+  "🪐",
+  "🌿",
+  "🔥",
+  "🎧",
+  "🖤",
+  "🪽",
+  "🧿",
+  "🫧",
+  "🌊",
+  "🕊️",
+] as const;
 
 export default function ProfilePage() {
+  const { t: ru } = useI18n();
   const currentUser = useAuthStore((state) => state.currentUser);
+  const nameSymbols = getNameSymbols(ru);
   const [form, setForm] = useState<ProfileForm>({
     firstName: "",
     lastName: "",
@@ -63,7 +67,7 @@ export default function ProfilePage() {
         await getMe();
       } catch {
         if (isActive) {
-          setError("Не удалось загрузить профиль.");
+          setError(ru.profile.loadError);
         }
       } finally {
         if (isActive) {
@@ -103,7 +107,7 @@ export default function ProfilePage() {
       setForm(toProfileForm(user));
       setIsEditing(false);
     } catch (error) {
-      setError(getProfileError(error));
+      setError(getProfileError(error, ru));
     } finally {
       setIsSaving(false);
     }
@@ -123,7 +127,7 @@ export default function ProfilePage() {
     try {
       await uploadAvatar(file);
     } catch {
-      setError("Не удалось обновить аватар.");
+      setError(ru.profile.avatarUpdateError);
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -132,23 +136,23 @@ export default function ProfilePage() {
   const fullName = currentUser
     ? [currentUser.firstName ?? "", currentUser.lastName ?? ""].filter(Boolean).join(" ") ||
       currentUser.username
-    : "Профиль";
+    : ru.profile.title;
 
   return (
     <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-main)]">
       <header className="sticky top-0 z-10 border-b border-[var(--border-soft)] bg-[var(--panel-bg)]/95 backdrop-blur">
         <div className="mx-auto flex h-16 w-full max-w-3xl items-center gap-3 px-4">
           <Link
-            aria-label="Назад к чатам"
+            aria-label={ru.profile.backToChats}
             className="flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             href="/chats"
           >
             <ArrowLeft size={22} />
           </Link>
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-semibold">Профиль</h1>
+            <h1 className="truncate text-lg font-semibold">{ru.profile.title}</h1>
             <p className="truncate text-sm text-[var(--text-muted)]">
-              {currentUser ? `@${currentUser.username}` : "Загрузка..."}
+              {currentUser ? `@${currentUser.username}` : ru.profile.loading}
             </p>
           </div>
         </div>
@@ -161,7 +165,7 @@ export default function ProfilePage() {
               className={`group relative rounded-full outline-none ${
                 isUploadingAvatar ? "cursor-wait opacity-70" : "cursor-pointer"
               }`}
-              title="Обновить аватар"
+              title={ru.profile.updateAvatar}
             >
               <input
                 accept="image/jpeg,image/png,image/webp"
@@ -188,7 +192,9 @@ export default function ProfilePage() {
             </label>
 
             <h2 className="mt-4 max-w-full truncate text-2xl font-semibold">
-              {isLoading ? "Загрузка..." : formatNameWithEmoji(fullName, currentUser?.nameEmoji)}
+              {isLoading
+                ? ru.profile.loading
+                : formatNameWithEmoji(fullName, currentUser?.nameEmoji)}
             </h2>
             <p className="mt-1 text-sm text-[var(--text-muted)]">
               {currentUser ? `@${currentUser.username}` : ""}
@@ -199,7 +205,7 @@ export default function ProfilePage() {
               </p>
             ) : (
               <p className="mt-4 text-[15px] text-[var(--text-muted)]">
-                О себе пока ничего не указано.
+                {ru.profile.emptyBio}
               </p>
             )}
           </div>
@@ -208,14 +214,14 @@ export default function ProfilePage() {
             {isEditing ? (
               <form className="space-y-4" onSubmit={handleSubmit}>
                 <ProfileInput
-                  label="Имя"
+                  label={ru.profile.firstName}
                   maxLength={64}
                   onChange={(value) => setForm((current) => ({ ...current, firstName: value }))}
                   required
                   value={form.firstName}
                 />
                 <ProfileInput
-                  label="Фамилия"
+                  label={ru.profile.lastName}
                   maxLength={64}
                   onChange={(value) => setForm((current) => ({ ...current, lastName: value }))}
                   value={form.lastName}
@@ -238,11 +244,12 @@ export default function ProfilePage() {
                   onChange={(value) =>
                     setForm((current) => ({ ...current, nameEmoji: value }))
                   }
+                  symbols={nameSymbols}
                   value={form.nameEmoji}
                 />
                 <label className="block">
                   <span className="mb-2 block text-sm font-medium text-[var(--text-muted)]">
-                    Bio
+                    {ru.profile.bio}
                   </span>
                   <textarea
                     className="min-h-28 w-full resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
@@ -250,7 +257,7 @@ export default function ProfilePage() {
                     onChange={(event) =>
                       setForm((current) => ({ ...current, bio: event.target.value }))
                     }
-                    placeholder="Пара строк о себе"
+                    placeholder={ru.profile.bioPlaceholder}
                     value={form.bio}
                   />
                 </label>
@@ -264,7 +271,7 @@ export default function ProfilePage() {
                     type="submit"
                   >
                     <Check size={18} />
-                    {isSaving ? "Сохранение..." : "Сохранить"}
+                    {isSaving ? ru.profile.saving : ru.profile.save}
                   </button>
                   <button
                     className="h-11 rounded-md px-4 text-[15px] font-medium text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
@@ -277,7 +284,7 @@ export default function ProfilePage() {
                     }}
                     type="button"
                   >
-                    Отмена
+                    {ru.profile.cancel}
                   </button>
                 </div>
               </form>
@@ -291,7 +298,7 @@ export default function ProfilePage() {
                   type="button"
                 >
                   <Pencil size={18} />
-                  Редактировать
+                  {ru.profile.edit}
                 </button>
               </>
             )}
@@ -343,18 +350,20 @@ function ProfileInput({
 
 function NameSymbolPicker({
   onChange,
+  symbols,
   value,
 }: {
   onChange: (value: string) => void;
+  symbols: Array<{ value: string; label: string; hint: string; legend?: string }>;
   value: string;
 }) {
   return (
     <fieldset>
       <legend className="mb-2 block text-sm font-medium text-[var(--text-muted)]">
-        Символ у имени
+        {symbols[0]?.legend}
       </legend>
       <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {NAME_SYMBOLS.map((symbol) => {
+        {symbols.map((symbol) => {
           const isSelected = value === symbol.value;
 
           return (
@@ -401,12 +410,12 @@ function resolveUploadUrl(url: string) {
   return url;
 }
 
-function getProfileError(error: unknown) {
+function getProfileError(error: unknown, ru: Messages) {
   if (error instanceof ApiError && error.status === 409) {
-    return "Username уже занят.";
+    return ru.profile.usernameTaken;
   }
 
-  return "Не удалось сохранить профиль.";
+  return ru.profile.saveError;
 }
 
 function toProfileForm(user: {
@@ -421,7 +430,7 @@ function toProfileForm(user: {
     lastName: user.lastName ?? "",
     username: user.username ?? "",
     bio: user.bio ?? "",
-    nameEmoji: NAME_SYMBOLS.some((symbol) => symbol.value === user.nameEmoji)
+    nameEmoji: NAME_SYMBOL_VALUES.some((symbol) => symbol === user.nameEmoji)
       ? user.nameEmoji ?? ""
       : "",
   };
@@ -429,4 +438,30 @@ function toProfileForm(user: {
 
 function formatNameWithEmoji(name: string, nameEmoji?: string | null) {
   return [nameEmoji, name].filter(Boolean).join(" ");
+}
+
+function getNameSymbols(ru: Messages) {
+  return [
+    {
+      value: "",
+      label: ru.profile.symbols.none,
+      hint: ru.profile.symbols.minimal,
+      legend: ru.profile.nameSymbol,
+    },
+    { value: "✨", label: ru.profile.symbols.sparkle, hint: ru.profile.symbols.creative },
+    { value: "🌙", label: ru.profile.symbols.moon, hint: ru.profile.symbols.calm },
+    { value: "☀️", label: ru.profile.symbols.sun, hint: ru.profile.symbols.open },
+    { value: "⚡", label: ru.profile.symbols.lightning, hint: ru.profile.symbols.energetic },
+    { value: "💎", label: ru.profile.symbols.crystal, hint: ru.profile.symbols.stylish },
+    { value: "🪐", label: ru.profile.symbols.orbit, hint: ru.profile.symbols.dreamer },
+    { value: "🌿", label: ru.profile.symbols.leaf, hint: ru.profile.symbols.soft },
+    { value: "🔥", label: ru.profile.symbols.fire, hint: ru.profile.symbols.brave },
+    { value: "🎧", label: ru.profile.symbols.sound, hint: ru.profile.symbols.musical },
+    { value: "🖤", label: ru.profile.symbols.graphite, hint: ru.profile.symbols.concise },
+    { value: "🪽", label: ru.profile.symbols.wing, hint: ru.profile.symbols.light },
+    { value: "🧿", label: ru.profile.symbols.amulet, hint: ru.profile.symbols.mysterious },
+    { value: "🫧", label: ru.profile.symbols.bubble, hint: ru.profile.symbols.airy },
+    { value: "🌊", label: ru.profile.symbols.wave, hint: ru.profile.symbols.flexible },
+    { value: "🕊️", label: ru.profile.symbols.peace, hint: ru.profile.symbols.warm },
+  ];
 }

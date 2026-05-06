@@ -10,6 +10,7 @@ import {
   LogOut,
   Megaphone,
   Menu,
+  Mic,
   Monitor,
   Moon,
   Plus,
@@ -51,7 +52,8 @@ import {
   emitTypingStop,
   getSocket,
 } from "@/lib/socket/client";
-import { ru } from "@/lib/i18n/ru";
+import { t as ru } from "@/lib/i18n";
+import { useI18n } from "@/providers/i18n-provider";
 import {
   UserSettings,
   getUserSettings,
@@ -68,6 +70,9 @@ const DEFAULT_SIDEBAR_WIDTH = 320;
 const MAX_SIDEBAR_WIDTH = 420;
 const COMPACT_SIDEBAR_WIDTH = 96;
 const TYPING_STOP_DELAY_MS = 1400;
+const VOICE_HOLD_THRESHOLD_MS = 260;
+const MIN_VOICE_DURATION_MS = 700;
+const VOICE_MIME_TYPE_OPTIONS = ["audio/webm;codecs=opus", "audio/webm"] as const;
 const EMPTY_CHAT_GIFS = [
   {
     aspectRatio: "480 / 346",
@@ -105,6 +110,7 @@ type ReceiptUpdate = {
 type SharedChatKind = Extract<ChatType, "group" | "channel">;
 
 export default function ChatsPage() {
+  useI18n();
   const router = useRouter();
   const currentUser = useAuthStore((state) => state.currentUser);
   const { cycleTheme, theme } = useTheme();
@@ -138,6 +144,10 @@ export default function ChatsPage() {
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [isSendingVoice, setIsSendingVoice] = useState(false);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [recordingStartedAt, setRecordingStartedAt] = useState<number | null>(null);
+  const [recordingDuration, setRecordingDuration] = useState(0);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [isCreatingSharedChat, setIsCreatingSharedChat] = useState(false);
   const [isGroupSettingsOpen, setIsGroupSettingsOpen] = useState(false);
@@ -158,6 +168,16 @@ export default function ChatsPage() {
   const isWindowFocusedRef = useRef(true);
   const canPlayAudioRef = useRef(false);
   const messageAudioRef = useRef<HTMLAudioElement | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const voiceChunksRef = useRef<Blob[]>([]);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  const voiceChatIdRef = useRef<string | null>(null);
+  const voiceStartTimeRef = useRef(0);
+  const voiceStopActionRef = useRef<"send" | "cancel">("send");
+  const pendingVoiceStopActionRef = useRef<"send" | "cancel" | null>(null);
+  const voicePointerStartedAtRef = useRef<number | null>(null);
+  const suppressNextVoiceClickRef = useRef(false);
+  const isRecordingVoiceRef = useRef(false);
   const isCompactSidebar = !isMobile && sidebarWidth <= COMPACT_SIDEBAR_WIDTH;
 
   useEffect(() => {
@@ -167,6 +187,37 @@ export default function ChatsPage() {
   useEffect(() => {
     selectedChatIdRef.current = selectedChat?.id ?? null;
   }, [selectedChat?.id]);
+
+  useEffect(() => {
+    if (isRecordingVoiceRef.current) {
+      stopVoiceRecording("cancel");
+    }
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    isRecordingVoiceRef.current = isRecordingVoice;
+  }, [isRecordingVoice]);
+
+  useEffect(() => {
+    if (!isRecordingVoice || !recordingStartedAt) {
+      return;
+    }
+
+    setRecordingDuration(Date.now() - recordingStartedAt);
+    const intervalId = window.setInterval(() => {
+      setRecordingDuration(Date.now() - recordingStartedAt);
+    }, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [isRecordingVoice, recordingStartedAt]);
+
+  useEffect(() => {
+    return () => {
+      cleanupVoiceStream();
+    };
+  }, []);
 
   useEffect(() => {
     messageAudioRef.current = new Audio("/sounds/message.mp3");
@@ -971,9 +1022,201 @@ export default function ChatsPage() {
     }
   }
 
+  function cleanupVoiceStream() {
+    mediaRecorderRef.current = null;
+    voiceChunksRef.current = [];
+    voiceChatIdRef.current = null;
+    voiceStreamRef.current?.getTracks().forEach((track) => track.stop());
+    voiceStreamRef.current = null;
+    pendingVoiceStopActionRef.current = null;
+  }
+
+  async function startVoiceRecording() {
+    if (
+      !selectedChat ||
+      isRecordingVoiceRef.current ||
+      isUploadingMedia ||
+      isSendingVoice
+    ) {
+      return;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setMessageError(ru.chats.errors.voiceUnsupported);
+      return;
+    }
+
+    const mimeType = getSupportedVoiceMimeType();
+
+    if (!mimeType) {
+      setMessageError(ru.chats.errors.voiceUnsupported);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType });
+      const startedAt = Date.now();
+
+      voiceChunksRef.current = [];
+      voiceStreamRef.current = stream;
+      voiceChatIdRef.current = selectedChat.id;
+      voiceStartTimeRef.current = startedAt;
+      voiceStopActionRef.current = "send";
+      mediaRecorderRef.current = recorder;
+
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) {
+          voiceChunksRef.current.push(event.data);
+        }
+      });
+
+      recorder.addEventListener("stop", () => {
+        void handleVoiceRecordingStop(mimeType);
+      });
+
+      recorder.start();
+      setMessageError(null);
+      setIsRecordingVoice(true);
+      setRecordingStartedAt(startedAt);
+      setRecordingDuration(0);
+      stopTyping(selectedChat.id);
+
+      const pendingStopAction = pendingVoiceStopActionRef.current;
+      if (pendingStopAction) {
+        pendingVoiceStopActionRef.current = null;
+        window.setTimeout(() => stopVoiceRecording(pendingStopAction), 0);
+      }
+    } catch {
+      cleanupVoiceStream();
+      setMessageError(ru.chats.errors.voicePermission);
+    }
+  }
+
+  function stopVoiceRecording(action: "send" | "cancel" = "send") {
+    const recorder = mediaRecorderRef.current;
+    voiceStopActionRef.current = action;
+
+    if (!recorder) {
+      pendingVoiceStopActionRef.current = action;
+      return;
+    }
+
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+      return;
+    }
+
+    void handleVoiceRecordingStop(recorder.mimeType || "audio/webm");
+  }
+
+  async function handleVoiceRecordingStop(mimeType: string) {
+    const chunks = voiceChunksRef.current;
+    const chatId = voiceChatIdRef.current;
+    const duration = Date.now() - voiceStartTimeRef.current;
+    const shouldSend = voiceStopActionRef.current === "send";
+
+    cleanupVoiceStream();
+    setIsRecordingVoice(false);
+    setRecordingStartedAt(null);
+    setRecordingDuration(0);
+
+    if (!shouldSend) {
+      return;
+    }
+
+    if (!chatId || duration < MIN_VOICE_DURATION_MS || !chunks.length) {
+      setMessageError(ru.chats.errors.voiceTooShort);
+      return;
+    }
+
+    const voiceFile = new File(chunks, "voice-message.webm", {
+      type: mimeType || "audio/webm",
+    });
+
+    setIsSendingVoice(true);
+    setMessageError(null);
+
+    try {
+      await sendMediaMessage(chatId, voiceFile);
+    } catch (error) {
+      setMessageError(
+        error instanceof ApiError ? error.message : ru.chats.errors.uploadMedia,
+      );
+    } finally {
+      setIsSendingVoice(false);
+    }
+  }
+
+  function handleVoicePointerDown(event: React.PointerEvent<HTMLButtonElement>) {
+    if (event.button !== 0 || isUploadingMedia || isSendingVoice) {
+      return;
+    }
+
+    voicePointerStartedAtRef.current = Date.now();
+
+    if (isRecordingVoiceRef.current) {
+      return;
+    }
+
+    suppressNextVoiceClickRef.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    void startVoiceRecording();
+  }
+
+  function handleVoicePointerUp() {
+    const startedAt = voicePointerStartedAtRef.current;
+    voicePointerStartedAtRef.current = null;
+
+    if (!startedAt) {
+      return;
+    }
+
+    const pressDuration = Date.now() - startedAt;
+
+    if (pressDuration >= VOICE_HOLD_THRESHOLD_MS) {
+      suppressNextVoiceClickRef.current = true;
+
+      if (isRecordingVoiceRef.current) {
+        stopVoiceRecording("send");
+      } else {
+        pendingVoiceStopActionRef.current = "send";
+      }
+    }
+  }
+
+  function handleVoicePointerCancel() {
+    voicePointerStartedAtRef.current = null;
+
+    if (isRecordingVoiceRef.current) {
+      suppressNextVoiceClickRef.current = true;
+      stopVoiceRecording("cancel");
+    } else {
+      pendingVoiceStopActionRef.current = "cancel";
+    }
+  }
+
+  function handleVoiceClick() {
+    if (suppressNextVoiceClickRef.current) {
+      suppressNextVoiceClickRef.current = false;
+      return;
+    }
+
+    if (isRecordingVoiceRef.current) {
+      stopVoiceRecording("send");
+      return;
+    }
+
+    void startVoiceRecording();
+  }
+
   function handleBackToChats() {
     if (selectedChat) {
       stopTyping(selectedChat.id);
+    }
+
+    if (isRecordingVoiceRef.current) {
+      stopVoiceRecording("cancel");
     }
 
     setSelectedChat(null);
@@ -1286,21 +1529,27 @@ export default function ChatsPage() {
         isSavingGroupSettings={isSavingGroupSettings}
         isSending={isSending}
         isUploadingMedia={isUploadingMedia}
+        isRecordingVoice={isRecordingVoice}
+        isSendingVoice={isSendingVoice}
         deletingMessageId={deletingMessageId}
         messageError={messageError}
         messageText={messageText}
         messages={messages}
         messagesEndRef={messagesEndRef}
+        recordingDuration={recordingDuration}
         isMobile={isMobile === true}
         onBackToChats={handleBackToChats}
         onMediaChange={handleMediaChange}
+        onVoiceClick={handleVoiceClick}
+        onVoicePointerCancel={handleVoicePointerCancel}
+        onVoicePointerDown={handleVoicePointerDown}
+        onVoicePointerUp={handleVoicePointerUp}
         onAddGroupMembers={handleAddGroupMembers}
         onCloseGroupSettings={() => setIsGroupSettingsOpen(false)}
         onDeleteMessage={handleDeleteMessage}
         onGroupAvatarChange={handleGroupAvatarChange}
         onGroupWallpaperChange={handleGroupWallpaperChange}
         onMentionAll={handleMentionAll}
-        onOpenMenu={() => setIsMobileDrawerOpen(true)}
         onOpenProfile={handleOpenProfile}
         onOpenGroupSettings={() => setIsGroupSettingsOpen(true)}
         onSaveGroupTitle={handleSaveGroupTitle}
@@ -1402,7 +1651,7 @@ function UserMenu({
         onClick={onLogout}
         tone="danger"
       >
-        {isLoggingOut ? ru.auth.loggingOut : "Выйти"}
+        {isLoggingOut ? ru.auth.loggingOut : ru.auth.logout}
       </MenuButton>
     </motion.div>
   );
@@ -2029,13 +2278,16 @@ function ChatArea({
   isGroupSettingsOpen,
   isLoadingMessages,
   isMobile,
+  isRecordingVoice,
   isSavingGroupSettings,
   isSending,
+  isSendingVoice,
   isUploadingMedia,
   messageError,
   messageText,
   messages,
   messagesEndRef,
+  recordingDuration,
   onAddGroupMembers,
   onBackToChats,
   onCloseGroupSettings,
@@ -2044,13 +2296,16 @@ function ChatArea({
   onGroupWallpaperChange,
   onMentionAll,
   onMediaChange,
-  onOpenMenu,
   onOpenProfile,
   onOpenGroupSettings,
   onMessageTextChange,
   onSaveGroupTitle,
   onSendMessage,
   onUpdateGroupRole,
+  onVoiceClick,
+  onVoicePointerCancel,
+  onVoicePointerDown,
+  onVoicePointerUp,
   selectedChat,
   typingUsers,
 }: {
@@ -2059,13 +2314,16 @@ function ChatArea({
   isGroupSettingsOpen: boolean;
   isLoadingMessages: boolean;
   isMobile: boolean;
+  isRecordingVoice: boolean;
   isSavingGroupSettings: boolean;
   isSending: boolean;
+  isSendingVoice: boolean;
   isUploadingMedia: boolean;
   messageError: string | null;
   messageText: string;
   messages: Message[];
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
+  recordingDuration: number;
   onAddGroupMembers: (memberIds: string[]) => void;
   onBackToChats: () => void;
   onCloseGroupSettings: () => void;
@@ -2074,13 +2332,16 @@ function ChatArea({
   onGroupWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onMentionAll: () => void;
   onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
-  onOpenMenu: () => void;
   onOpenProfile: (username: string) => void;
   onOpenGroupSettings: () => void;
   onMessageTextChange: (value: string) => void;
   onSaveGroupTitle: (title: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
   onUpdateGroupRole: (userId: string, role: "admin" | "member") => void;
+  onVoiceClick: () => void;
+  onVoicePointerCancel: () => void;
+  onVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
+  onVoicePointerUp: () => void;
   selectedChat: Chat | null;
   typingUsers: TypingUser[];
 }) {
@@ -2105,14 +2366,6 @@ function ChatArea({
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         >
           <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 md:h-[73px] md:px-5">
-            <button
-              aria-label="Открыть меню"
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] md:hidden"
-              onClick={onOpenMenu}
-              type="button"
-            >
-              <Menu size={22} />
-            </button>
             <button
               aria-label={ru.chats.backToChats}
               className="flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-[15px] font-medium text-[var(--accent)] transition hover:bg-[var(--hover-soft)] md:hidden"
@@ -2234,7 +2487,7 @@ function ChatArea({
               {messageError ? (
                 <p className="mb-2 text-sm text-[var(--danger)]">{messageError}</p>
               ) : null}
-              {isUploadingMedia ? (
+              {isUploadingMedia || isSendingVoice ? (
                 <p className="mb-2 text-sm text-[var(--text-muted)]">{ru.chats.uploading}</p>
               ) : null}
               <div className="flex min-w-0 items-end gap-2 md:gap-3">
@@ -2247,31 +2500,71 @@ function ChatArea({
                   <input
                     accept="image/jpeg,image/png,image/webp,video/mp4,audio/mpeg,audio/webm,application/pdf"
                     className="sr-only"
-                    disabled={isUploadingMedia}
+                    disabled={isUploadingMedia || isSendingVoice || isRecordingVoice}
                     onChange={onMediaChange}
                     type="file"
                   />
                   <span aria-hidden="true">+</span>
                 </label>
-                <textarea
-                  className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
-                  onChange={(event) => onMessageTextChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
+                {isRecordingVoice ? (
+                  <div className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md border border-[var(--accent)]/40 bg-[var(--active-soft)] px-4 text-[15px] text-[var(--text-main)]">
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--danger)]" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {ru.chats.recordingVoice}
+                    </span>
+                    <span className="shrink-0 font-mono text-sm text-[var(--text-muted)]">
+                      {formatVoiceDuration(recordingDuration)}
+                    </span>
+                  </div>
+                ) : (
+                  <textarea
+                    className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                    disabled={isSendingVoice}
+                    onChange={(event) => onMessageTextChange(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && !event.shiftKey) {
+                        event.preventDefault();
+                        event.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    placeholder={
+                      selectedChat.type === "channel"
+                        ? ru.chats.postPlaceholder
+                        : ru.chats.messagePlaceholder
                     }
-                  }}
-                  placeholder={
-                    selectedChat.type === "channel"
-                      ? ru.chats.postPlaceholder
-                      : ru.chats.messagePlaceholder
-                  }
-                  value={messageText}
-                />
+                    value={messageText}
+                  />
+                )}
                 <button
-                  className="h-11 shrink-0 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
-                  disabled={isSending || isUploadingMedia || !messageText.trim()}
+                  aria-label={ru.chats.recordVoice}
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                    isRecordingVoice
+                      ? "border-[var(--danger)] bg-red-500/10 text-[var(--danger)]"
+                      : "border-[var(--border-soft)] bg-[var(--input-bg)] text-[var(--accent)] hover:bg-[var(--hover-soft)]"
+                  }`}
+                  disabled={isUploadingMedia || isSendingVoice || isSending}
+                  onClick={onVoiceClick}
+                  onPointerCancel={onVoicePointerCancel}
+                  onPointerDown={onVoicePointerDown}
+                  onPointerUp={onVoicePointerUp}
+                  title={
+                    isRecordingVoice
+                      ? ru.chats.tapToSendVoice
+                      : ru.chats.recordVoice
+                  }
+                  type="button"
+                >
+                  <Mic size={20} />
+                </button>
+                <button
+                  className="h-11 shrink-0 self-end rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
+                  disabled={
+                    isSending ||
+                    isUploadingMedia ||
+                    isSendingVoice ||
+                    isRecordingVoice ||
+                    !messageText.trim()
+                  }
                   type="submit"
                 >
                   {isSending ? ru.chats.sending : ru.chats.send}
@@ -2929,7 +3222,7 @@ function formatLastMessagePreview(chat: Chat, messagePreviewEnabled: boolean) {
   }
 
   if (!messagePreviewEnabled) {
-    return "Новое сообщение";
+    return ru.chats.newMessage;
   }
 
   if (chat.lastMessage.text?.trim()) {
@@ -2943,22 +3236,30 @@ function formatLastMessagePreview(chat: Chat, messagePreviewEnabled: boolean) {
   }
 
   if (chat.lastMessage.mediaType === "image") {
-    return "Фото";
+    return ru.chats.photo;
   }
 
   if (chat.lastMessage.mediaType === "video") {
-    return "Видео";
+    return ru.chats.video;
   }
 
   if (chat.lastMessage.mediaType === "audio") {
-    return "Аудио";
+    return ru.chats.audio;
   }
 
   if (chat.lastMessage.mediaType === "document") {
-    return "Документ";
+    return ru.chats.document;
   }
 
-  return "Сообщение";
+  return ru.chats.message;
+}
+
+function getSupportedVoiceMimeType() {
+  return (
+    VOICE_MIME_TYPE_OPTIONS.find((mimeType) =>
+      MediaRecorder.isTypeSupported(mimeType),
+    ) ?? null
+  );
 }
 
 function formatChatListTime(value: string) {
@@ -3035,6 +3336,14 @@ function formatMessageTime(value: string) {
   }).format(new Date(value));
 }
 
+function formatVoiceDuration(durationMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function formatMessageDate(value: string) {
   const date = new Date(value);
   const today = new Date();
@@ -3042,11 +3351,11 @@ function formatMessageDate(value: string) {
   yesterday.setDate(today.getDate() - 1);
 
   if (isSameMessageDay(value, today.toISOString())) {
-    return "Сегодня";
+    return ru.chats.today;
   }
 
   if (isSameMessageDay(value, yesterday.toISOString())) {
-    return "Вчера";
+    return ru.chats.yesterday;
   }
 
   return new Intl.DateTimeFormat(undefined, {
