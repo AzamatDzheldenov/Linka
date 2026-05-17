@@ -17,8 +17,8 @@ const manrope = Manrope({
 });
 
 export const metadata: Metadata = {
-  title: "Linka Мессенджер",
-  description: "Приватный мессенджер Linka",
+  title: "Linka",
+  description: "Linka",
   icons: {
     icon: "/linka-icon.png",
     shortcut: "/linka-icon.png",

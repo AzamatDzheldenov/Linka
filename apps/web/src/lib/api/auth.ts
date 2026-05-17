@@ -3,7 +3,7 @@ import {
   setAccessToken,
   useAuthStore,
 } from "../../store/auth-store";
-import { apiRequest } from "./client";
+import { apiRequest, markAuthSessionChanged } from "./client";
 import { disconnectSocket } from "@/lib/socket/client";
 import { getMe } from "./users";
 
@@ -74,16 +74,34 @@ export async function refresh() {
 }
 
 export async function logout() {
+  markAuthSessionChanged();
+  disconnectSocket();
+  useAuthStore.getState().clearAuth();
+
   await apiRequest<{ success: boolean }>("/auth/logout", {
     method: "POST",
     auth: false,
   });
+}
 
+export async function logoutAll() {
+  const response = await apiRequest<{
+    success: boolean;
+    message: string;
+    revokedSessions: number;
+  }>("/auth/logout-all", {
+    method: "POST",
+  });
+
+  markAuthSessionChanged();
   disconnectSocket();
   useAuthStore.getState().clearAuth();
+
+  return response;
 }
 
 async function persistAuthResponse(response: AuthResponse) {
+  markAuthSessionChanged();
   setAccessToken(response.accessToken);
   await getMe();
 }

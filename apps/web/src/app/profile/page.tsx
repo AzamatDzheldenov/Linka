@@ -8,6 +8,7 @@ import type { Messages } from "@/lib/i18n";
 import { getMe, updateMe, uploadAvatar } from "@/lib/api/users";
 import { useI18n } from "@/providers/i18n-provider";
 import { useAuthStore } from "@/store/auth-store";
+import { AppBottomNav } from "@/components/ui/app-bottom-nav";
 
 type ProfileForm = {
   firstName: string;
@@ -139,12 +140,12 @@ export default function ProfilePage() {
     : ru.profile.title;
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-main)]">
-      <header className="sticky top-0 z-10 border-b border-[var(--border-soft)] bg-[var(--panel-bg)]/95 backdrop-blur">
+    <main className="min-h-screen bg-[var(--app-bg)] pb-28 text-[var(--text-main)] lg:pb-0">
+      <header className="sticky top-0 z-10 hidden border-b border-[var(--border-soft)] bg-[var(--panel-floating)]/90 backdrop-blur-xl lg:block">
         <div className="mx-auto flex h-16 w-full max-w-3xl items-center gap-3 px-4">
           <Link
             aria-label={ru.profile.backToChats}
-            className="flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+            className="ios-button flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             href="/chats"
           >
             <ArrowLeft size={22} />
@@ -158,8 +159,8 @@ export default function ProfilePage() {
         </div>
       </header>
 
-      <section className="mx-auto w-full max-w-3xl px-4 py-5">
-        <div className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-xl shadow-black/10">
+      <section className="mx-auto w-full max-w-3xl px-4 pb-5 pt-[calc(0.85rem+env(safe-area-inset-top))] lg:py-5">
+        <div className="ios-grouped">
           <div className="flex flex-col items-center px-5 pb-6 pt-7 text-center">
             <label
               className={`group relative rounded-full outline-none ${
@@ -174,7 +175,7 @@ export default function ProfilePage() {
                 onChange={handleAvatarChange}
                 type="file"
               />
-              <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-4xl font-semibold text-[var(--accent)]">
+              <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-4xl font-semibold text-[var(--accent)] shadow-[inset_0_0_0_0.5px_var(--border-soft)]">
                 {currentUser?.avatarUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -227,7 +228,7 @@ export default function ProfilePage() {
                   value={form.lastName}
                 />
                 <ProfileInput
-                  label="Username"
+                  label={ru.profile.username}
                   maxLength={20}
                   minLength={3}
                   onChange={(value) =>
@@ -252,7 +253,7 @@ export default function ProfilePage() {
                     {ru.profile.bio}
                   </span>
                   <textarea
-                    className="min-h-28 w-full resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                    className="ios-input min-h-28 w-full resize-none px-4 py-3 text-[15px] placeholder:text-[var(--text-soft)]"
                     maxLength={160}
                     onChange={(event) =>
                       setForm((current) => ({ ...current, bio: event.target.value }))
@@ -266,7 +267,7 @@ export default function ProfilePage() {
 
                 <div className="flex gap-2">
                   <button
-                    className="flex h-11 flex-1 items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                    className="ios-button flex h-11 flex-1 items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-70"
                     disabled={isSaving}
                     type="submit"
                   >
@@ -274,7 +275,7 @@ export default function ProfilePage() {
                     {isSaving ? ru.profile.saving : ru.profile.save}
                   </button>
                   <button
-                    className="h-11 rounded-md px-4 text-[15px] font-medium text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+                    className="ios-button h-11 rounded-full px-4 text-[15px] font-medium text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
                     disabled={isSaving}
                     onClick={() => {
                       if (currentUser) {
@@ -292,7 +293,7 @@ export default function ProfilePage() {
               <>
                 {error ? <ProfileError>{error}</ProfileError> : null}
                 <button
-                  className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--input-bg)] px-4 text-[15px] font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
+                  className="ios-button flex h-11 w-full items-center justify-center gap-2 rounded-full bg-[var(--input-bg)] px-4 text-[15px] font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
                   disabled={!currentUser}
                   onClick={() => setIsEditing(true)}
                   type="button"
@@ -305,6 +306,7 @@ export default function ProfilePage() {
           </div>
         </div>
       </section>
+      <AppBottomNav />
     </main>
   );
 }
@@ -334,7 +336,7 @@ function ProfileInput({
         {label}
       </span>
       <input
-        className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+        className="ios-input h-11 w-full px-4 text-[15px] placeholder:text-[var(--text-soft)]"
         maxLength={maxLength}
         minLength={minLength}
         onChange={(event) => onChange(event.target.value)}
@@ -368,10 +370,10 @@ function NameSymbolPicker({
 
           return (
             <button
-              className={`flex min-h-14 items-center gap-2 rounded-md border px-3 text-left transition ${
+              className={`flex min-h-14 items-center gap-2 rounded-[14px] border px-3 text-left transition ${
                 isSelected
-                  ? "border-[var(--accent)] bg-[var(--active-soft)]"
-                  : "border-[var(--border-soft)] bg-[var(--input-bg)] hover:bg-[var(--hover-soft)]"
+                ? "border-[var(--accent)] bg-[var(--active-soft)]"
+                : "border-[var(--border-soft)] bg-[var(--input-bg)] hover:bg-[var(--hover-soft)]"
               }`}
               key={symbol.label}
               onClick={() => onChange(symbol.value)}
@@ -396,7 +398,7 @@ function NameSymbolPicker({
 
 function ProfileError({ children }: { children: string }) {
   return (
-    <div className="rounded-md border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-[var(--danger)]">
+    <div className="rounded-[14px] border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-[var(--danger)]">
       {children}
     </div>
   );

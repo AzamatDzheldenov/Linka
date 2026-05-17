@@ -2,34 +2,53 @@
 
 :root {
   color-scheme: dark;
-  --app-bg: #0e1621;
-  --panel-bg: #17212b;
-  --panel-elevated: #1d2a36;
-  --input-bg: #242f3d;
-  --text-main: #f5f8fb;
-  --text-muted: #8fa3b5;
-  --text-soft: #6f8191;
-  --border-soft: rgba(255, 255, 255, 0.05);
-  --hover-soft: rgba(255, 255, 255, 0.04);
-  --active-soft: rgba(42, 171, 238, 0.15);
-  --accent: #2aabee;
-  --accent-hover: #239bd8;
-  --danger: #fca5a5;
+  --app-bg: #000000;
+  --panel-bg: #111113;
+  --panel-elevated: #1c1c1e;
+  --panel-floating: rgba(28, 28, 30, 0.78);
+  --input-bg: #202124;
+  --surface-soft: #161618;
+  --text-main: #f5f5f7;
+  --text-muted: #98989f;
+  --text-soft: #6e6e73;
+  --border-soft: rgba(255, 255, 255, 0.08);
+  --hover-soft: rgba(255, 255, 255, 0.07);
+  --active-soft: rgba(0, 136, 204, 0.18);
+  --accent: #0088cc;
+  --accent-hover: #179bd7;
+  --bubble-in: #1c1c1e;
+  --bubble-out: #0a84ff;
+  --bubble-out-text: #ffffff;
+  --danger: #ff6b6b;
+  --radius-xs: 10px;
+  --radius-sm: 14px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.28);
+  --shadow-float: 0 18px 50px rgba(0, 0, 0, 0.34);
+  --hairline: inset 0 0 0 0.5px var(--border-soft);
 }
 
 html.light {
   color-scheme: light;
-  --app-bg: #eef3f8;
+  --app-bg: #f5f5f7;
   --panel-bg: #ffffff;
-  --panel-elevated: #f7fafc;
-  --input-bg: #edf3f8;
-  --text-main: #182533;
-  --text-muted: #64788b;
-  --text-soft: #8798a8;
-  --border-soft: rgba(24, 37, 51, 0.08);
-  --hover-soft: rgba(42, 171, 238, 0.08);
-  --active-soft: rgba(42, 171, 238, 0.16);
-  --danger: #dc2626;
+  --panel-elevated: #f2f2f7;
+  --panel-floating: rgba(255, 255, 255, 0.76);
+  --input-bg: #f2f2f7;
+  --surface-soft: #fbfbfd;
+  --text-main: #1d1d1f;
+  --text-muted: #6e6e73;
+  --text-soft: #9a9aa1;
+  --border-soft: rgba(60, 60, 67, 0.14);
+  --hover-soft: rgba(60, 60, 67, 0.07);
+  --active-soft: rgba(0, 136, 204, 0.12);
+  --bubble-in: #ffffff;
+  --bubble-out: #0a84ff;
+  --bubble-out-text: #ffffff;
+  --danger: #d70015;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-float: 0 18px 46px rgba(0, 0, 0, 0.16);
 }
 
 * {
@@ -45,7 +64,10 @@ body {
   margin: 0;
   background: var(--app-bg);
   color: var(--text-main);
-  font-family: var(--font-inter), Arial, Helvetica, sans-serif;
+  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Text", Arial, Helvetica, sans-serif;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
 }
 
 h1,
@@ -71,4 +93,71 @@ html[data-compact="true"] {
 button,
 input {
   font: inherit;
+}
+
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@layer components {
+  .ios-glass {
+    background: var(--panel-floating);
+    box-shadow: var(--hairline), var(--shadow-float);
+    -webkit-backdrop-filter: blur(22px) saturate(170%);
+    backdrop-filter: blur(22px) saturate(170%);
+  }
+
+  .ios-surface {
+    background: var(--panel-bg);
+    border: 0.5px solid var(--border-soft);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .ios-grouped {
+    overflow: hidden;
+    border-radius: var(--radius-md);
+    background: var(--panel-bg);
+    border: 0.5px solid var(--border-soft);
+    box-shadow: var(--shadow-soft);
+  }
+
+  .ios-input {
+    border-radius: var(--radius-sm);
+    border: 0.5px solid var(--border-soft);
+    background: var(--input-bg);
+    color: var(--text-main);
+    transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .ios-input:focus {
+    border-color: color-mix(in srgb, var(--accent) 64%, transparent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+    outline: none;
+  }
+
+  .ios-button {
+    border-radius: var(--radius-sm);
+    transition: transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1), background-color 160ms ease, opacity 160ms ease;
+  }
+
+  .ios-button:active {
+    transform: scale(0.97);
+  }
+
+  .ios-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--text-soft) 55%, transparent) transparent;
+  }
+
+  .ios-safe-bottom {
+    padding-bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  }
 }

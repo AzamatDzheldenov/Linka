@@ -1,13 +1,15 @@
 import { ru } from "./ru";
 import { uz } from "./uz";
+import { ky } from "./ky";
 import type { Messages } from "./ru";
 
-export type Language = "ru" | "uz";
+export type Language = "ru" | "uz" | "ky";
 export type { Messages };
 
 export const dictionaries = {
   ru,
   uz,
+  ky,
 } satisfies Record<Language, Messages>;
 
 let activeLanguage: Language = "ru";

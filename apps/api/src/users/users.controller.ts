@@ -13,6 +13,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { SkipThrottle } from "@nestjs/throttler";
 import { randomUUID } from "crypto";
 import { Request } from "express";
 import { mkdirSync } from "fs";
@@ -42,6 +43,7 @@ type AuthenticatedRequest = Request & {
 };
 
 @Controller("users")
+@SkipThrottle({ short: true })
 @UseGuards(JwtAuthGuard)
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}

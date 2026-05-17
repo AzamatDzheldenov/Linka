@@ -1,7 +1,7 @@
 import { Module } from "@nestjs/common";
 import { JwtModule } from "@nestjs/jwt";
 import { PrismaModule } from "../prisma/prisma.module";
-import { MessagesController } from "./messages.controller";
+import { MessageMediaController, MessagesController } from "./messages.controller";
 import { MessagesEventsService } from "./messages-events.service";
 import { MessagesGateway } from "./messages.gateway";
 import { MessagesService } from "./messages.service";
@@ -13,7 +13,7 @@ import { MessagesService } from "./messages.service";
       secret: process.env.JWT_ACCESS_SECRET ?? "dev-access-secret",
     }),
   ],
-  controllers: [MessagesController],
+  controllers: [MessagesController, MessageMediaController],
   providers: [MessagesService, MessagesEventsService, MessagesGateway],
 })
 export class MessagesModule {}

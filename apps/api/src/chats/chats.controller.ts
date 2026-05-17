@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -12,6 +13,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { SkipThrottle } from "@nestjs/throttler";
 import { randomUUID } from "crypto";
 import { Request } from "express";
 import { mkdirSync } from "fs";
@@ -22,6 +24,7 @@ import { AddChatMembersDto } from "./dto/add-chat-members.dto";
 import { CreatePrivateChatDto } from "./dto/create-private-chat.dto";
 import { CreateSharedChatDto } from "./dto/create-shared-chat.dto";
 import { RespondGroupInviteDto } from "./dto/respond-group-invite.dto";
+import { UpdateChatMemberRoleByParamDto } from "./dto/update-chat-member-role-by-param.dto";
 import { UpdateChatMemberRoleDto } from "./dto/update-chat-member-role.dto";
 import { UpdateChatSettingsDto } from "./dto/update-chat-settings.dto";
 import { ChatsService } from "./chats.service";
@@ -45,6 +48,7 @@ type AuthenticatedRequest = Request & {
 };
 
 @Controller("chats")
+@SkipThrottle({ short: true })
 @UseGuards(JwtAuthGuard)
 export class ChatsController {
   constructor(private readonly chatsService: ChatsService) {}
@@ -114,6 +118,23 @@ export class ChatsController {
     return this.chatsService.addMembers(request.user.id, chatId, dto);
   }
 
+  @Get(":chatId/subscribers")
+  getChannelSubscribers(
+    @Req() request: AuthenticatedRequest,
+    @Param("chatId") chatId: string,
+  ) {
+    return this.chatsService.getChannelSubscribers(request.user.id, chatId);
+  }
+
+  @Delete(":chatId/members/:userId")
+  removeMember(
+    @Req() request: AuthenticatedRequest,
+    @Param("chatId") chatId: string,
+    @Param("userId") userId: string,
+  ) {
+    return this.chatsService.removeMember(request.user.id, chatId, userId);
+  }
+
   @Patch(":chatId/members/role")
   updateMemberRole(
     @Req() request: AuthenticatedRequest,
@@ -121,6 +142,21 @@ export class ChatsController {
     @Body() dto: UpdateChatMemberRoleDto,
   ) {
     return this.chatsService.updateMemberRole(request.user.id, chatId, dto);
+  }
+
+  @Patch(":chatId/members/:userId")
+  updateMemberRoleByParam(
+    @Req() request: AuthenticatedRequest,
+    @Param("chatId") chatId: string,
+    @Param("userId") userId: string,
+    @Body() dto: UpdateChatMemberRoleByParamDto,
+  ) {
+    return this.chatsService.updateMemberRoleByUserId(
+      request.user.id,
+      chatId,
+      userId,
+      dto.role,
+    );
   }
 
   @Post(":chatId/avatar")

@@ -8,6 +8,7 @@ import {
   Res,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { Request, Response } from "express";
 import { AuthService, REFRESH_TOKEN_COOKIE } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
@@ -25,6 +26,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post("register")
+  @Throttle({ short: { ttl: 60000, limit: 3 } })
   async register(
     @Body() dto: RegisterDto,
     @Res({ passthrough: true }) response: Response,
@@ -35,6 +37,7 @@ export class AuthController {
   }
 
   @Post("login")
+  @Throttle({ short: { ttl: 60000, limit: 5 } })
   async login(
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) response: Response,
@@ -45,6 +48,7 @@ export class AuthController {
   }
 
   @Post("refresh")
+  @Throttle({ short: { ttl: 60000, limit: 20 } })
   async refresh(
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
@@ -56,6 +60,7 @@ export class AuthController {
   }
 
   @Post("logout")
+  @Throttle({ short: { ttl: 60000, limit: 10 } })
   async logout(
     @Req() request: Request,
     @Res({ passthrough: true }) response: Response,
@@ -66,6 +71,18 @@ export class AuthController {
     return { success: true };
   }
 
+  @Post("logout-all")
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ short: { ttl: 60000, limit: 10 } })
+  async logoutAll(
+    @Req() request: AuthenticatedRequest,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    const result = await this.authService.logoutAll(request.user.id);
+    response.clearCookie(REFRESH_TOKEN_COOKIE, this.refreshCookieOptions());
+    return result;
+  }
+
   @Get("me")
   @UseGuards(JwtAuthGuard)
   async me(@Req() request: AuthenticatedRequest) {
@@ -73,6 +90,7 @@ export class AuthController {
   }
 
   @Get("username-available")
+  @Throttle({ short: { ttl: 60000, limit: 10 } })
   async usernameAvailable(@Query("username") username?: string) {
     return this.authService.isUsernameAvailable(username ?? "");
   }

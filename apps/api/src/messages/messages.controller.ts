@@ -6,22 +6,24 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Req,
+  Res,
   UploadedFile,
   UseGuards,
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { SkipThrottle } from "@nestjs/throttler";
 import { randomUUID } from "crypto";
-import { Request } from "express";
-import { mkdir, writeFile } from "fs/promises";
+import { Request, Response } from "express";
+import { mkdir, unlink, writeFile } from "fs/promises";
 import { memoryStorage } from "multer";
 import { join } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { MessagesEventsService } from "./messages-events.service";
-import { MessagesService } from "./messages.service";
+import { MESSAGE_UPLOAD_DIR, MessagesService } from "./messages.service";
 
-const MESSAGE_UPLOAD_DIR = join(__dirname, "..", "..", "uploads", "messages");
 const MAX_MEDIA_SIZE_BYTES = 25 * 1024 * 1024;
 const ALLOWED_MEDIA_MIME_TYPES = new Set([
   "image/jpeg",
@@ -45,6 +47,7 @@ type AuthenticatedRequest = Request & {
 };
 
 @Controller("chats/:chatId")
+@SkipThrottle({ short: true })
 @UseGuards(JwtAuthGuard)
 export class MessagesController {
   constructor(
@@ -56,8 +59,9 @@ export class MessagesController {
   getMessages(
     @Req() request: AuthenticatedRequest,
     @Param("chatId") chatId: string,
+    @Query("cursor") cursor?: string,
   ) {
-    return this.messagesService.getMessages(request.user.id, chatId);
+    return this.messagesService.getMessages(request.user.id, chatId, cursor);
   }
 
   @Delete("messages/:messageId")
@@ -102,25 +106,58 @@ export class MessagesController {
       throw new BadRequestException("Media file is required");
     }
 
-    await this.messagesService.assertChatMember(request.user.id, chatId);
+    await this.messagesService.assertCanSendMessage(request.user.id, chatId);
 
     const filename = `${randomUUID()}${getMediaExtension(file.mimetype)}`;
+    const filePath = join(MESSAGE_UPLOAD_DIR, filename);
+
     await mkdir(MESSAGE_UPLOAD_DIR, { recursive: true });
-    await writeFile(join(MESSAGE_UPLOAD_DIR, filename), file.buffer);
 
-    const message = await this.messagesService.createMediaMessage(request.user.id, {
-      chatId,
-      mediaUrl: `/uploads/messages/${filename}`,
-      mediaType: getMediaType(file.mimetype),
-      text,
-    });
+    try {
+      await writeFile(filePath, file.buffer);
 
-    this.messagesEventsService.emitNewMessage(chatId, message);
-    const memberIds = await this.messagesService.getChatMemberIds(chatId);
-    memberIds.forEach((memberId) => {
-      this.messagesEventsService.emitChatNewMessage(memberId, message);
-    });
-    return message;
+      const message = await this.messagesService.createMediaMessage(request.user.id, {
+        chatId,
+        mediaUrl: `/messages/media/${filename}`,
+        mediaType: getMediaType(file.mimetype),
+        text,
+      });
+
+      this.messagesEventsService.emitNewMessage(chatId, message);
+      const memberIds = await this.messagesService.getChatMemberIds(chatId);
+      memberIds.forEach((memberId) => {
+        this.messagesEventsService.emitChatNewMessage(memberId, message);
+      });
+      return message;
+    } catch (error) {
+      await unlink(filePath).catch(() => undefined);
+      throw error;
+    }
+  }
+}
+
+@Controller("messages")
+@SkipThrottle({ short: true })
+@UseGuards(JwtAuthGuard)
+export class MessageMediaController {
+  constructor(private readonly messagesService: MessagesService) {}
+
+  @Get("media/:fileId")
+  async getMedia(
+    @Req() request: AuthenticatedRequest,
+    @Param("fileId") fileId: string,
+    @Res() response: Response,
+  ) {
+    const mediaFile = await this.messagesService.getMediaFile(
+      request.user.id,
+      fileId,
+    );
+
+    if (mediaFile.contentType) {
+      response.type(mediaFile.contentType);
+    }
+
+    return response.sendFile(mediaFile.filePath);
   }
 }
 

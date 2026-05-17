@@ -6,6 +6,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Camera,
   Check,
+  ChevronLeft,
   Image,
   LogOut,
   Megaphone,
@@ -15,6 +16,7 @@ import {
   Moon,
   Plus,
   Search,
+  SendHorizontal,
   Settings,
   ShieldCheck,
   Sun,
@@ -26,6 +28,7 @@ import {
 import {
   Chat,
   ChatType,
+  ChannelSubscriber,
   GroupInvite,
   addChatMembers,
   createChannel,
@@ -33,6 +36,7 @@ import {
   createPrivateChat,
   getGroupInvites,
   getChats,
+  getSubscribers,
   respondToGroupInvite,
   updateChatMemberRole,
   updateChatSettings,
@@ -42,6 +46,7 @@ import {
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
 import {
   deleteMessage,
+  getMessageMediaBlob,
   getMessages,
   Message,
   sendMediaMessage,
@@ -63,6 +68,7 @@ import {
 import { AuthUser, useAuthStore } from "@/store/auth-store";
 import { ThemeMode, useTheme } from "@/providers/theme-provider";
 import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
+import { AppBottomNav } from "@/components/ui/app-bottom-nav";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
 const MIN_SIDEBAR_WIDTH = 72;
@@ -77,17 +83,14 @@ const EMPTY_CHAT_GIFS = [
   {
     aspectRatio: "480 / 346",
     src: "https://media.giphy.com/media/MMquV2oInK40V86Q7g/giphy.gif",
-    title: "Котенок на троне",
   },
   {
     aspectRatio: "1 / 1",
     src: "https://media.giphy.com/media/G6TgcESZt8FFk8XV7K/giphy.gif",
-    title: "Кот ест чипсы",
   },
   {
     aspectRatio: "1 / 1",
     src: "https://media.giphy.com/media/4uVyQiFGLicuI/giphy.gif",
-    title: "Ожидание сообщения",
   },
 ] as const;
 
@@ -133,6 +136,8 @@ export default function ChatsPage() {
   const [groupInvites, setGroupInvites] = useState<GroupInvite[]>([]);
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasOlderMessages, setHasOlderMessages] = useState(false);
+  const [olderMessagesCursor, setOlderMessagesCursor] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [messageText, setMessageText] = useState("");
   const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
@@ -142,6 +147,7 @@ export default function ChatsPage() {
   const [isSearchingMembers, setIsSearchingMembers] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isSendingVoice, setIsSendingVoice] = useState(false);
@@ -161,7 +167,9 @@ export default function ChatsPage() {
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const profileFileInputRef = useRef<HTMLInputElement | null>(null);
   const sidebarWidthRef = useRef(sidebarWidth);
+  const messagesScrollRef = useRef<HTMLDivElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const preserveMessageScrollRef = useRef(false);
   const typingStopTimeoutRef = useRef<number | null>(null);
   const activeTypingChatIdRef = useRef<string | null>(null);
   const selectedChatIdRef = useRef<string | null>(null);
@@ -249,7 +257,7 @@ export default function ChatsPage() {
   }, []);
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia("(max-width: 767px)");
+    const mediaQuery = window.matchMedia("(max-width: 1023px)");
 
     function handleViewportChange() {
       setIsMobile(mediaQuery.matches);
@@ -554,6 +562,8 @@ export default function ChatsPage() {
   useEffect(() => {
     if (!selectedChat) {
       setMessages([]);
+      setHasOlderMessages(false);
+      setOlderMessagesCursor(null);
       setTypingUsers([]);
       return;
     }
@@ -569,7 +579,9 @@ export default function ChatsPage() {
         const history = await getMessages(chatId);
 
         if (isActive) {
-          setMessages(history);
+          setMessages(history.messages);
+          setHasOlderMessages(history.hasMore);
+          setOlderMessagesCursor(history.nextCursor);
           if (userSettings?.showReadReceipts !== false) {
             socket?.emit("markAsRead", { chatId });
           }
@@ -577,6 +589,8 @@ export default function ChatsPage() {
       } catch {
         if (isActive) {
           setMessages([]);
+          setHasOlderMessages(false);
+          setOlderMessagesCursor(null);
           setMessageError(ru.chats.errors.loadMessages);
         }
       } finally {
@@ -709,7 +723,63 @@ export default function ChatsPage() {
     );
   }
 
+  async function handleLoadOlderMessages() {
+    if (!selectedChat || isLoadingOlderMessages || !hasOlderMessages) {
+      return;
+    }
+
+    const cursor = olderMessagesCursor ?? messages[0]?.id;
+    if (!cursor) {
+      setHasOlderMessages(false);
+      return;
+    }
+
+    const scrollContainer = messagesScrollRef.current;
+    const previousScrollHeight = scrollContainer?.scrollHeight ?? 0;
+    const previousScrollTop = scrollContainer?.scrollTop ?? 0;
+    const requestedChatId = selectedChat.id;
+
+    setIsLoadingOlderMessages(true);
+    setMessageError(null);
+
+    try {
+      const history = await getMessages(requestedChatId, cursor);
+
+      if (selectedChatIdRef.current !== requestedChatId) {
+        return;
+      }
+
+      preserveMessageScrollRef.current = true;
+      setMessages((currentMessages) => {
+        const currentIds = new Set(currentMessages.map((message) => message.id));
+        const olderMessages = history.messages.filter(
+          (message) => !currentIds.has(message.id),
+        );
+
+        return [...olderMessages, ...currentMessages];
+      });
+      setHasOlderMessages(history.hasMore);
+      setOlderMessagesCursor(history.nextCursor);
+
+      window.requestAnimationFrame(() => {
+        if (scrollContainer) {
+          scrollContainer.scrollTop =
+            scrollContainer.scrollHeight - previousScrollHeight + previousScrollTop;
+        }
+      });
+    } catch {
+      setMessageError(ru.chats.errors.loadMessages);
+    } finally {
+      setIsLoadingOlderMessages(false);
+    }
+  }
+
   useEffect(() => {
+    if (preserveMessageScrollRef.current) {
+      preserveMessageScrollRef.current = false;
+      return;
+    }
+
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, selectedChat?.id]);
 
@@ -876,7 +946,10 @@ export default function ChatsPage() {
     }
   }
 
-  async function handleUpdateGroupRole(userId: string, role: "admin" | "member") {
+  async function handleUpdateGroupRole(
+    userId: string,
+    role: "admin" | "member" | "subscriber",
+  ) {
     if (!selectedChat) {
       return;
     }
@@ -1361,8 +1434,8 @@ export default function ChatsPage() {
       <AnimatePresence>
         {isMobile && isMobileDrawerOpen ? (
           <motion.button
-            aria-label="Закрыть меню"
-            className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px] md:hidden"
+            aria-label={ru.app.close}
+            className="fixed inset-0 z-40 bg-black/35 backdrop-blur-[1px] lg:hidden"
             exit={{ opacity: 0 }}
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -1377,7 +1450,7 @@ export default function ChatsPage() {
         animate={{
           x: isMobile && selectedChat && !isMobileDrawerOpen ? "-100%" : "0%",
         }}
-        className="fixed inset-y-0 left-0 z-50 flex min-h-0 w-full flex-col border-r border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/25 md:relative md:z-auto md:flex md:shrink-0 md:shadow-none"
+        className="fixed inset-y-0 left-0 z-50 flex min-h-0 w-full flex-col border-r border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/25 lg:relative lg:z-auto lg:flex lg:shrink-0 lg:shadow-none"
         initial={false}
         style={
           isMobile === false
@@ -1397,7 +1470,7 @@ export default function ChatsPage() {
         transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       >
         <header
-          className={`border-b border-[var(--border-soft)] py-4 ${
+          className={`hidden border-b border-[var(--border-soft)] bg-[var(--panel-floating)]/80 py-4 backdrop-blur-xl lg:block ${
             isCompactSidebar ? "px-3" : "px-4"
           }`}
         >
@@ -1414,13 +1487,13 @@ export default function ChatsPage() {
               <button
                 aria-expanded={isUserMenuOpen}
                 aria-haspopup="menu"
-                aria-label="Открыть меню аккаунта"
-                className={`flex shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] outline-none transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-wait disabled:opacity-70 ${
+                aria-label={ru.app.accountMenu}
+                className={`ios-button flex shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] outline-none transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40 disabled:cursor-wait disabled:opacity-70 ${
                   isCompactSidebar ? "h-8 w-8" : "h-10 w-10"
                 }`}
                 disabled={isUploadingAvatar}
                 onClick={() => setIsUserMenuOpen((isOpen) => !isOpen)}
-                title="Открыть меню аккаунта"
+                title={ru.app.accountMenu}
                 type="button"
               >
                 <Menu size={isCompactSidebar ? 20 : 22} />
@@ -1448,8 +1521,8 @@ export default function ChatsPage() {
             />
             {isMobile ? (
               <button
-                aria-label="Закрыть меню"
-                className="ml-auto flex h-9 w-9 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] md:hidden"
+                aria-label={ru.app.close}
+                className="ios-button ml-auto flex h-9 w-9 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] lg:hidden"
                 onClick={() => setIsMobileDrawerOpen(false)}
                 type="button"
               >
@@ -1463,11 +1536,11 @@ export default function ChatsPage() {
         </header>
 
         {isCompactSidebar ? null : (
-          <div className="border-b border-[var(--border-soft)] px-4 py-3">
+          <div className="border-b border-[var(--border-soft)] px-4 pb-3 pt-[calc(0.75rem+env(safe-area-inset-top))] lg:py-3">
             <label className="block">
               <span className="sr-only">{ru.chats.searchUsers}</span>
               <input
-                className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                className="ios-input h-10 w-full px-4 text-[15px] placeholder:text-[var(--text-soft)]"
                 type="search"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -1478,7 +1551,7 @@ export default function ChatsPage() {
           </div>
         )}
 
-        <section className="min-h-0 flex-1 overflow-y-auto pb-24">
+        <section className="ios-scroll min-h-0 flex-1 overflow-y-auto pb-28 lg:pb-24">
           {!isCompactSidebar && query.trim() ? (
             <SearchResults
               compact={isCompactSidebar}
@@ -1512,7 +1585,7 @@ export default function ChatsPage() {
 
         <button
           aria-label={ru.chats.resizeSidebar}
-          className={`absolute -right-[5px] top-0 z-10 hidden h-full w-[10px] cursor-col-resize items-center justify-center md:flex ${
+          className={`absolute -right-[5px] top-0 z-10 hidden h-full w-[10px] cursor-col-resize items-center justify-center lg:flex ${
             isResizingSidebar ? "bg-[var(--accent)]/10" : "bg-transparent"
           }`}
           onPointerDown={handleSidebarResizeStart}
@@ -1525,6 +1598,7 @@ export default function ChatsPage() {
       <ChatArea
         currentUserId={currentUser?.id ?? null}
         isLoadingMessages={isLoadingMessages}
+        isLoadingOlderMessages={isLoadingOlderMessages}
         isGroupSettingsOpen={isGroupSettingsOpen}
         isSavingGroupSettings={isSavingGroupSettings}
         isSending={isSending}
@@ -1535,7 +1609,9 @@ export default function ChatsPage() {
         messageError={messageError}
         messageText={messageText}
         messages={messages}
+        messagesScrollRef={messagesScrollRef}
         messagesEndRef={messagesEndRef}
+        hasOlderMessages={hasOlderMessages}
         recordingDuration={recordingDuration}
         isMobile={isMobile === true}
         onBackToChats={handleBackToChats}
@@ -1549,6 +1625,7 @@ export default function ChatsPage() {
         onDeleteMessage={handleDeleteMessage}
         onGroupAvatarChange={handleGroupAvatarChange}
         onGroupWallpaperChange={handleGroupWallpaperChange}
+        onLoadOlderMessages={handleLoadOlderMessages}
         onMentionAll={handleMentionAll}
         onOpenProfile={handleOpenProfile}
         onOpenGroupSettings={() => setIsGroupSettingsOpen(true)}
@@ -1578,6 +1655,7 @@ export default function ChatsPage() {
           />
         ) : null}
       </AnimatePresence>
+      <AppBottomNav hidden={Boolean(selectedChat && !isMobileDrawerOpen)} />
     </main>
   );
 }
@@ -1606,7 +1684,7 @@ function UserMenu({
   return (
     <motion.div
       animate={{ opacity: 1, scale: 1, y: 0 }}
-      className="absolute left-0 top-[calc(100%+0.5rem)] z-50 w-72 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
+      className="ios-glass absolute left-0 top-[calc(100%+0.5rem)] z-50 w-72 overflow-hidden rounded-[22px] py-1"
       exit={{ opacity: 0, scale: 0.98, y: -6 }}
       initial={{ opacity: 0, scale: 0.98, y: -6 }}
       role="menu"
@@ -1634,13 +1712,13 @@ function UserMenu({
         {isUploadingAvatar ? ru.chats.uploading : ru.chats.uploadAvatar}
       </MenuButton>
       <MenuButton icon={<User size={18} />} onClick={onProfile}>
-        Профиль
+        {ru.app.profile}
       </MenuButton>
       <MenuButton icon={<Settings size={18} />} onClick={onSettings}>
-        Настройки
+        {ru.app.settings}
       </MenuButton>
       <MenuButton icon={getThemeIcon(theme)} onClick={onTheme}>
-        Сменить тему
+        {ru.app.changeTheme}
         <span className="ml-auto text-xs text-[var(--text-muted)]">
           {getThemeLabel(theme)}
         </span>
@@ -1700,12 +1778,12 @@ function CreateChatFab({
   onSelectKind: (kind: SharedChatKind) => void;
 }) {
   return (
-    <div className="absolute bottom-[calc(1rem+env(safe-area-inset-bottom))] right-4 z-20">
+    <div className="absolute bottom-[calc(5.35rem+env(safe-area-inset-bottom))] right-4 z-20 lg:bottom-[calc(1rem+env(safe-area-inset-bottom))]">
       <AnimatePresence>
         {isOpen ? (
           <motion.div
             animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="mb-3 w-56 overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-elevated)] py-1 shadow-2xl shadow-black/25"
+            className="ios-glass mb-3 w-56 overflow-hidden rounded-[22px] py-1"
             exit={{ opacity: 0, scale: 0.98, y: 8 }}
             initial={{ opacity: 0, scale: 0.98, y: 8 }}
             transition={{ duration: 0.16, ease: "easeOut" }}
@@ -1729,7 +1807,7 @@ function CreateChatFab({
         aria-expanded={isOpen}
         aria-haspopup="menu"
         aria-label={ru.chats.createChat}
-        className="ml-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-xl shadow-black/25 transition hover:bg-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
+        className="ios-button ml-auto flex h-12 w-12 items-center justify-center rounded-full bg-[var(--accent)] text-white shadow-lg shadow-black/20 transition hover:bg-[var(--accent-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/40"
         onClick={() => onOpenChange(!isOpen)}
         title={ru.chats.createChat}
         type="button"
@@ -1799,7 +1877,7 @@ function SharedChatModal({
   return (
     <motion.div
       animate={{ opacity: 1 }}
-      className="fixed inset-0 z-[70] flex items-end bg-black/45 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 backdrop-blur-[1px] md:items-center md:justify-center md:p-6"
+      className="fixed inset-0 z-[70] flex items-end bg-black/38 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 backdrop-blur-sm md:items-center md:justify-center md:p-6"
       exit={{ opacity: 0 }}
       initial={{ opacity: 0 }}
       role="dialog"
@@ -1807,7 +1885,7 @@ function SharedChatModal({
     >
       <motion.form
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        className="max-h-[88dvh] w-full overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/30 md:max-w-lg"
+        className="ios-glass max-h-[88dvh] w-full overflow-hidden rounded-[28px] md:max-w-lg"
         exit={{ opacity: 0, scale: 0.98, y: 16 }}
         initial={{ opacity: 0, scale: 0.98, y: 16 }}
         onSubmit={onCreate}
@@ -1826,7 +1904,7 @@ function SharedChatModal({
             </p>
           </div>
           <button
-            aria-label="Закрыть"
+            aria-label={ru.app.close}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             disabled={isCreating}
             onClick={onClose}
@@ -1842,7 +1920,7 @@ function SharedChatModal({
               {ru.chats.sharedChatTitle}
             </span>
             <input
-              className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+              className="ios-input h-11 w-full px-4 text-[15px] placeholder:text-[var(--text-soft)]"
               disabled={isCreating}
               maxLength={80}
               onChange={(event) => onTitleChange(event.target.value)}
@@ -1878,7 +1956,7 @@ function SharedChatModal({
                 size={18}
               />
               <input
-                className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] pl-10 pr-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                className="ios-input h-11 w-full pl-10 pr-4 text-[15px] placeholder:text-[var(--text-soft)]"
                 disabled={isCreating}
                 onChange={(event) => onQueryChange(event.target.value)}
                 placeholder={ru.chats.searchUsers}
@@ -1947,7 +2025,7 @@ function SharedChatModal({
             {ru.chats.cancel}
           </button>
           <button
-            className="h-10 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            className="ios-button h-10 rounded-full bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isCreating || !canCreate}
             type="submit"
           >
@@ -1992,7 +2070,7 @@ function ChatList({
   }
 
   return (
-    <ul className="divide-y divide-[var(--border-soft)]">
+    <ul className="py-1">
       {groupInvites.map((invite) => (
         <li key={invite.id}>
           <InviteListItem
@@ -2006,7 +2084,7 @@ function ChatList({
       {chats.map((chat) => (
         <li key={chat.id}>
           <button
-            className={`flex w-full items-center px-4 py-3 text-left transition duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30 ${
+            className={`mx-2 flex w-[calc(100%-1rem)] items-center rounded-[18px] px-3 py-2.5 text-left transition duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/30 ${
               selectedChatId === chat.id
                 ? "bg-[var(--active-soft)]"
                 : "hover:bg-[var(--hover-soft)]"
@@ -2111,7 +2189,7 @@ function RandomEmptyGif({ className = "" }: { className?: string }) {
       >
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          alt={gif.title}
+          alt=""
           className="h-full w-full"
           loading="lazy"
           src={gif.src}
@@ -2275,8 +2353,10 @@ function SearchResults({
 function ChatArea({
   currentUserId,
   deletingMessageId,
+  hasOlderMessages,
   isGroupSettingsOpen,
   isLoadingMessages,
+  isLoadingOlderMessages,
   isMobile,
   isRecordingVoice,
   isSavingGroupSettings,
@@ -2286,6 +2366,7 @@ function ChatArea({
   messageError,
   messageText,
   messages,
+  messagesScrollRef,
   messagesEndRef,
   recordingDuration,
   onAddGroupMembers,
@@ -2294,6 +2375,7 @@ function ChatArea({
   onDeleteMessage,
   onGroupAvatarChange,
   onGroupWallpaperChange,
+  onLoadOlderMessages,
   onMentionAll,
   onMediaChange,
   onOpenProfile,
@@ -2311,8 +2393,10 @@ function ChatArea({
 }: {
   currentUserId: string | null;
   deletingMessageId: string | null;
+  hasOlderMessages: boolean;
   isGroupSettingsOpen: boolean;
   isLoadingMessages: boolean;
+  isLoadingOlderMessages: boolean;
   isMobile: boolean;
   isRecordingVoice: boolean;
   isSavingGroupSettings: boolean;
@@ -2322,6 +2406,7 @@ function ChatArea({
   messageError: string | null;
   messageText: string;
   messages: Message[];
+  messagesScrollRef: React.RefObject<HTMLDivElement | null>;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   recordingDuration: number;
   onAddGroupMembers: (memberIds: string[]) => void;
@@ -2330,6 +2415,7 @@ function ChatArea({
   onDeleteMessage: (message: Message) => void;
   onGroupAvatarChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onGroupWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  onLoadOlderMessages: () => void;
   onMentionAll: () => void;
   onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onOpenProfile: (username: string) => void;
@@ -2337,7 +2423,10 @@ function ChatArea({
   onMessageTextChange: (value: string) => void;
   onSaveGroupTitle: (title: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
-  onUpdateGroupRole: (userId: string, role: "admin" | "member") => void;
+  onUpdateGroupRole: (
+    userId: string,
+    role: "admin" | "member" | "subscriber",
+  ) => void;
   onVoiceClick: () => void;
   onVoicePointerCancel: () => void;
   onVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
@@ -2347,12 +2436,19 @@ function ChatArea({
 }) {
   const typingText = getTypingText(typingUsers);
   const canPost = canPostInChat(selectedChat);
-  const canManageGroup = canManageSelectedGroup(selectedChat);
-  const isGroupOwner = selectedChat?.type === "group" && selectedChat.currentUserRole === "owner";
+  const canManageChat = canManageSelectedChat(selectedChat);
+  const canModerateMessages =
+    selectedChat?.type === "group" && canManageChat;
+  const isChatOwner =
+    (selectedChat?.type === "group" || selectedChat?.type === "channel") &&
+    selectedChat.currentUserRole === "owner";
+  const settingsLabel = selectedChat
+    ? getChatSettingsLabel(selectedChat)
+    : ru.chats.groupSettings;
 
   return (
     <motion.section
-      className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)] md:flex ${
+      className={`min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[var(--app-bg)] lg:flex ${
         selectedChat ? "flex" : "hidden"
       }`}
       initial={false}
@@ -2365,18 +2461,18 @@ function ChatArea({
           key={selectedChat.id}
           transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
         >
-          <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 md:h-[73px] md:px-5">
+          <header className="flex h-[64px] shrink-0 items-center gap-3 border-b border-[var(--border-soft)] bg-[var(--panel-floating)] px-3 pt-[env(safe-area-inset-top)] backdrop-blur-xl lg:h-[73px] lg:px-5 lg:pt-0">
             <button
               aria-label={ru.chats.backToChats}
-              className="flex h-10 shrink-0 items-center gap-1 rounded-md px-2 text-[15px] font-medium text-[var(--accent)] transition hover:bg-[var(--hover-soft)] md:hidden"
+              className="ios-button flex h-10 shrink-0 items-center gap-0 rounded-full px-1 pr-2 text-[15px] font-medium text-[var(--accent)] transition hover:bg-[var(--hover-soft)] lg:hidden"
               onClick={onBackToChats}
               type="button"
             >
-              <span aria-hidden="true">{"<"}</span>
+              <ChevronLeft aria-hidden="true" size={24} />
               <span>{ru.chats.back}</span>
             </button>
             <button
-              className="flex min-w-0 items-center gap-3 rounded-md text-left transition hover:bg-[var(--hover-soft)]"
+              className="flex min-w-0 items-center gap-3 rounded-full pr-3 text-left transition hover:bg-[var(--hover-soft)]"
               onClick={() => {
                 if (selectedChat.partner) {
                   onOpenProfile(selectedChat.partner.username);
@@ -2402,12 +2498,12 @@ function ChatArea({
                 </p>
               </div>
             </button>
-            {canManageGroup ? (
+            {canManageChat ? (
               <button
-                aria-label={ru.chats.groupSettings}
-                className="ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+                aria-label={settingsLabel}
+                className="ios-button ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
                 onClick={onOpenGroupSettings}
-                title={ru.chats.groupSettings}
+                title={settingsLabel}
                 type="button"
               >
                 <Settings size={20} />
@@ -2416,7 +2512,8 @@ function ChatArea({
           </header>
 
           <div
-            className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-cover bg-center px-3 py-4 md:px-5 md:py-5"
+            className="ios-scroll min-h-0 flex-1 overflow-y-auto overflow-x-hidden bg-cover bg-center px-3 py-4 md:px-5 md:py-5"
+            ref={messagesScrollRef}
             style={
               selectedChat.wallpaperUrl
                 ? { backgroundImage: `url(${resolveUploadUrl(selectedChat.wallpaperUrl)})` }
@@ -2427,6 +2524,20 @@ function ChatArea({
               <MessageSkeleton />
             ) : messages.length ? (
               <div className="space-y-1.5">
+                {hasOlderMessages ? (
+                  <div className="flex justify-center pb-3">
+                    <button
+                      className="ios-button h-9 rounded-full border border-[var(--border-soft)] bg-[var(--panel-floating)] px-4 text-sm font-semibold text-[var(--accent)] shadow-sm backdrop-blur transition hover:bg-[var(--hover-soft)] disabled:cursor-wait disabled:opacity-60"
+                      disabled={isLoadingOlderMessages}
+                      onClick={onLoadOlderMessages}
+                      type="button"
+                    >
+                      {isLoadingOlderMessages
+                        ? ru.chats.loadingOlderMessages
+                        : ru.chats.loadOlderMessages}
+                    </button>
+                  </div>
+                ) : null}
                 <AnimatePresence initial={false}>
                   {messages.map((message, index) => {
                     const previousMessage = messages[index - 1];
@@ -2447,7 +2558,7 @@ function ChatArea({
                         ) : null}
                         <MessageBubble
                           canDelete={
-                            message.senderId === currentUserId || canManageGroup
+                            message.senderId === currentUserId || canModerateMessages
                           }
                           chatType={selectedChat.type}
                           deletingMessageId={deletingMessageId}
@@ -2481,7 +2592,7 @@ function ChatArea({
 
           {canPost ? (
             <form
-              className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 md:px-4"
+              className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-floating)] px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-3 backdrop-blur-xl md:px-4"
               onSubmit={onSendMessage}
             >
               {messageError ? (
@@ -2492,7 +2603,7 @@ function ChatArea({
               ) : null}
               <div className="flex min-w-0 items-end gap-2 md:gap-3">
                 <label
-                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-xl font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)] ${
+                  className={`ios-button flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-[var(--border-soft)] bg-[var(--input-bg)] text-xl font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)] ${
                     isUploadingMedia ? "cursor-wait opacity-60" : "cursor-pointer"
                   }`}
                   title={ru.chats.attachFile}
@@ -2504,11 +2615,11 @@ function ChatArea({
                     onChange={onMediaChange}
                     type="file"
                   />
-                  <span aria-hidden="true">+</span>
+                  <Plus aria-hidden="true" size={23} />
                 </label>
                 {isRecordingVoice ? (
-                  <div className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-md border border-[var(--accent)]/40 bg-[var(--active-soft)] px-4 text-[15px] text-[var(--text-main)]">
-                    <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--danger)]" />
+                  <div className="flex min-h-11 min-w-0 flex-1 items-center gap-3 rounded-[22px] border border-[var(--accent)]/30 bg-[var(--active-soft)] px-4 text-[15px] text-[var(--text-main)]">
+                    <span className="h-2.5 w-2.5 shrink-0 animate-pulse rounded-full bg-[var(--danger)]" />
                     <span className="min-w-0 flex-1 truncate">
                       {ru.chats.recordingVoice}
                     </span>
@@ -2518,7 +2629,7 @@ function ChatArea({
                   </div>
                 ) : (
                   <textarea
-                    className="max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                    className="ios-input max-h-32 min-h-11 min-w-0 flex-1 resize-none rounded-[22px] px-4 py-3 text-[15px] placeholder:text-[var(--text-soft)]"
                     disabled={isSendingVoice}
                     onChange={(event) => onMessageTextChange(event.target.value)}
                     onKeyDown={(event) => {
@@ -2537,7 +2648,7 @@ function ChatArea({
                 )}
                 <button
                   aria-label={ru.chats.recordVoice}
-                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-md border transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  className={`ios-button flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition disabled:cursor-not-allowed disabled:opacity-60 ${
                     isRecordingVoice
                       ? "border-[var(--danger)] bg-red-500/10 text-[var(--danger)]"
                       : "border-[var(--border-soft)] bg-[var(--input-bg)] text-[var(--accent)] hover:bg-[var(--hover-soft)]"
@@ -2557,7 +2668,8 @@ function ChatArea({
                   <Mic size={20} />
                 </button>
                 <button
-                  className="h-11 shrink-0 self-end rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:px-5"
+                  aria-label={ru.chats.send}
+                  className="ios-button flex h-11 w-11 shrink-0 items-center justify-center self-end rounded-full bg-[var(--accent)] text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60 md:w-auto md:px-4"
                   disabled={
                     isSending ||
                     isUploadingMedia ||
@@ -2567,11 +2679,12 @@ function ChatArea({
                   }
                   type="submit"
                 >
-                  {isSending ? ru.chats.sending : ru.chats.send}
+                  <SendHorizontal className="md:hidden" size={19} />
+                  <span className="hidden md:inline">{isSending ? ru.chats.sending : ru.chats.send}</span>
                 </button>
-                {canManageGroup ? (
+                {canModerateMessages ? (
                   <button
-                    className="h-11 shrink-0 rounded-md border border-[var(--border-soft)] px-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
+                    className="ios-button h-11 shrink-0 rounded-full border border-[var(--border-soft)] px-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
                     onClick={onMentionAll}
                     type="button"
                   >
@@ -2581,7 +2694,7 @@ function ChatArea({
               </div>
             </form>
           ) : (
-            <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-bg)] px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] text-center text-sm text-[var(--text-muted)]">
+            <div className="shrink-0 border-t border-[var(--border-soft)] bg-[var(--panel-floating)] px-4 py-4 pb-[calc(1rem+env(safe-area-inset-bottom))] text-center text-sm text-[var(--text-muted)] backdrop-blur-xl">
               {ru.chats.channelReadOnly}
             </div>
           )}
@@ -2602,9 +2715,9 @@ function ChatArea({
       )}
       <AnimatePresence>
         {selectedChat && isGroupSettingsOpen ? (
-          <GroupSettingsPanel
+          <SharedChatSettingsPanel
             chat={selectedChat}
-            isOwner={isGroupOwner}
+            isOwner={isChatOwner}
             isSaving={isSavingGroupSettings}
             onAddMembers={onAddGroupMembers}
             onAvatarChange={onGroupAvatarChange}
@@ -2639,7 +2752,7 @@ function MessageSkeleton() {
   );
 }
 
-function GroupSettingsPanel({
+function SharedChatSettingsPanel({
   chat,
   isOwner,
   isSaving,
@@ -2659,7 +2772,10 @@ function GroupSettingsPanel({
   onClose: () => void;
   onOpenProfile: (username: string) => void;
   onSaveTitle: (title: string) => void;
-  onUpdateRole: (userId: string, role: "admin" | "member") => void;
+  onUpdateRole: (
+    userId: string,
+    role: "admin" | "member" | "subscriber",
+  ) => void;
   onWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
 }) {
   const [title, setTitle] = useState(chat.title ?? "");
@@ -2667,10 +2783,49 @@ function GroupSettingsPanel({
   const [results, setResults] = useState<AuthUser[]>([]);
   const [selectedUsers, setSelectedUsers] = useState<AuthUser[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [subscribers, setSubscribers] = useState<ChannelSubscriber[]>([]);
+  const [isLoadingSubscribers, setIsLoadingSubscribers] = useState(false);
+  const [subscribersError, setSubscribersError] = useState<string | null>(null);
+  const isChannel = chat.type === "channel";
 
   useEffect(() => {
     setTitle(chat.title ?? "");
   }, [chat.title]);
+
+  useEffect(() => {
+    if (!isChannel) {
+      setSubscribers([]);
+      setSubscribersError(null);
+      setIsLoadingSubscribers(false);
+      return;
+    }
+
+    let isActive = true;
+    setIsLoadingSubscribers(true);
+    setSubscribersError(null);
+
+    getSubscribers(chat.id)
+      .then((items) => {
+        if (isActive) {
+          setSubscribers(items);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setSubscribers([]);
+          setSubscribersError(ru.chats.errors.loadSubscribers);
+        }
+      })
+      .finally(() => {
+        if (isActive) {
+          setIsLoadingSubscribers(false);
+        }
+      });
+
+    return () => {
+      isActive = false;
+    };
+  }, [chat.id, chat.memberCount, isChannel]);
 
   useEffect(() => {
     const normalizedQuery = query.trim();
@@ -2728,7 +2883,7 @@ function GroupSettingsPanel({
   return (
     <motion.aside
       animate={{ opacity: 1, x: 0 }}
-      className="absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col border-l border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-2xl shadow-black/30"
+      className="ios-glass absolute inset-y-0 right-0 z-30 flex w-full max-w-md flex-col border-l border-[var(--border-soft)]"
       exit={{ opacity: 0, x: 32 }}
       initial={{ opacity: 0, x: 32 }}
       transition={{ duration: 0.18, ease: "easeOut" }}
@@ -2736,10 +2891,10 @@ function GroupSettingsPanel({
       <header className="flex h-[64px] items-center gap-3 border-b border-[var(--border-soft)] px-4">
         <ShieldCheck className="text-[var(--accent)]" size={21} />
         <h2 className="min-w-0 flex-1 truncate text-[16px] font-semibold">
-          {ru.chats.groupSettings}
+          {getChatSettingsLabel(chat)}
         </h2>
         <button
-          aria-label="Закрыть"
+          aria-label={ru.app.close}
           className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
           onClick={onClose}
           type="button"
@@ -2755,7 +2910,7 @@ function GroupSettingsPanel({
               {ru.chats.sharedChatTitle}
             </span>
             <input
-              className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+              className="ios-input h-11 w-full px-4 text-[15px]"
               disabled={isSaving}
               maxLength={80}
               onChange={(event) => setTitle(event.target.value)}
@@ -2763,7 +2918,7 @@ function GroupSettingsPanel({
             />
           </label>
           <button
-            className="h-10 rounded-md bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
+            className="ios-button h-10 rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
             disabled={isSaving || !title.trim() || title.trim() === (chat.title ?? "")}
             onClick={() => onSaveTitle(title)}
             type="button"
@@ -2775,7 +2930,7 @@ function GroupSettingsPanel({
         <section className="grid grid-cols-2 gap-3">
           <label className="flex h-11 cursor-pointer items-center justify-center gap-2 rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] text-sm font-medium text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]">
             <Camera size={17} />
-            {ru.chats.groupAvatar}
+            {isChannel ? ru.chats.channelAvatar : ru.chats.groupAvatar}
             <input
               accept="image/jpeg,image/png,image/webp"
               className="sr-only"
@@ -2802,7 +2957,7 @@ function GroupSettingsPanel({
             {ru.chats.addMembers}
           </h3>
           <input
-            className="h-10 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-3 text-sm text-[var(--text-main)] outline-none transition focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+          className="ios-input h-10 w-full px-3 text-sm"
             disabled={isSaving}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={ru.chats.searchUsers}
@@ -2854,7 +3009,7 @@ function GroupSettingsPanel({
             )}
           </div>
           <button
-            className="mt-2 h-10 w-full rounded-md bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
+            className="ios-button mt-2 h-10 w-full rounded-full bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:opacity-60"
             disabled={isSaving || !selectedUsers.length}
             onClick={handleAddSelectedMembers}
             type="button"
@@ -2870,7 +3025,17 @@ function GroupSettingsPanel({
           <div className="divide-y divide-[var(--border-soft)] rounded-md border border-[var(--border-soft)]">
             {chat.members.map((member) => {
               const canToggleRole =
-                isOwner && !["owner", "subscriber"].includes(member.role);
+                isOwner &&
+                (isChannel
+                  ? member.role !== "owner"
+                  : !["owner", "subscriber"].includes(member.role));
+              const nextRole = isChannel
+                ? member.role === "admin"
+                  ? "subscriber"
+                  : "admin"
+                : member.role === "admin"
+                  ? "member"
+                  : "admin";
 
               return (
                 <div className="flex items-center gap-3 px-3 py-2" key={member.user.id}>
@@ -2897,10 +3062,7 @@ function GroupSettingsPanel({
                       className="h-8 rounded-md px-2 text-xs font-semibold text-[var(--accent)] transition hover:bg-[var(--hover-soft)]"
                       disabled={isSaving}
                       onClick={() =>
-                        onUpdateRole(
-                          member.user.id,
-                          member.role === "admin" ? "member" : "admin",
-                        )
+                        onUpdateRole(member.user.id, nextRole)
                       }
                       type="button"
                     >
@@ -2914,6 +3076,50 @@ function GroupSettingsPanel({
             })}
           </div>
         </section>
+
+        {isChannel ? (
+          <section>
+            <h3 className="mb-2 text-sm font-semibold text-[var(--text-main)]">
+              {ru.chats.channelSubscribers}
+            </h3>
+            <div className="divide-y divide-[var(--border-soft)] rounded-md border border-[var(--border-soft)]">
+              {isLoadingSubscribers ? (
+                <StateMessage>{ru.chats.loadingSubscribers}</StateMessage>
+              ) : subscribersError ? (
+                <StateMessage tone="error">{subscribersError}</StateMessage>
+              ) : subscribers.length ? (
+                subscribers.map((subscriber) => (
+                  <div
+                    className="flex items-center gap-3 px-3 py-2"
+                    key={subscriber.user.id}
+                  >
+                    <button
+                      className="shrink-0"
+                      onClick={() => onOpenProfile(subscriber.user.username)}
+                      type="button"
+                    >
+                      <Avatar
+                        avatarUrl={subscriber.user.avatarUrl}
+                        label={getUserDisplayName(subscriber.user)}
+                      />
+                    </button>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">
+                        {getUserDisplayName(subscriber.user)}
+                      </p>
+                      <p className="truncate text-xs text-[var(--text-muted)]">
+                        @{subscriber.user.username} ·{" "}
+                        {formatJoinedAt(subscriber.joinedAt)}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <StateMessage>{ru.chats.noSubscribers}</StateMessage>
+              )}
+            </div>
+          </section>
+        ) : null}
       </div>
     </motion.aside>
   );
@@ -2922,7 +3128,7 @@ function GroupSettingsPanel({
 function DateSeparator({ value }: { value: string }) {
   return (
     <div className="sticky top-2 z-[1] my-3 flex justify-center">
-      <span className="rounded-full border border-[var(--border-soft)] bg-[var(--panel-elevated)]/90 px-3 py-1 text-xs font-medium text-[var(--text-muted)] shadow-sm backdrop-blur">
+      <span className="ios-glass rounded-full px-3 py-1 text-xs font-medium text-[var(--text-muted)]">
         {formatMessageDate(value)}
       </span>
     </div>
@@ -2971,10 +3177,10 @@ function MessageBubble({
         </button>
       ) : null}
       <div
-        className={`max-w-[86%] px-3 py-2 text-[15px] leading-5 shadow-sm md:max-w-[68%] ${
+        className={`max-w-[86%] px-3.5 py-2 text-[15px] leading-5 shadow-sm md:max-w-[68%] ${
           isOwn
-            ? "rounded-2xl rounded-br-md bg-[var(--accent)] text-white"
-            : "rounded-2xl rounded-bl-md border border-[var(--border-soft)] bg-[var(--panel-bg)] text-[var(--text-main)]"
+            ? "rounded-[20px] rounded-br-[6px] bg-[var(--bubble-out)] text-[var(--bubble-out-text)]"
+            : "rounded-[20px] rounded-bl-[6px] border border-[var(--border-soft)] bg-[var(--bubble-in)] text-[var(--text-main)]"
         }`}
       >
         {showSender ? (
@@ -3038,19 +3244,73 @@ function MessageStatus({ status }: { status: "sent" | "delivered" | "read" }) {
 }
 
 function MessageMedia({ message }: { message: Message }) {
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    if (!message.mediaUrl || !message.mediaType) {
+      setObjectUrl(null);
+      setHasError(false);
+      return;
+    }
+
+    let isActive = true;
+    let nextObjectUrl: string | null = null;
+    setObjectUrl(null);
+    setHasError(false);
+
+    getMessageMediaBlob(message.mediaUrl)
+      .then((blob) => {
+        nextObjectUrl = URL.createObjectURL(blob);
+
+        if (isActive) {
+          setObjectUrl(nextObjectUrl);
+        } else {
+          URL.revokeObjectURL(nextObjectUrl);
+        }
+      })
+      .catch(() => {
+        if (isActive) {
+          setHasError(true);
+        }
+      });
+
+    return () => {
+      isActive = false;
+
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [message.mediaType, message.mediaUrl]);
+
   if (!message.mediaUrl || !message.mediaType) {
     return null;
   }
 
-  const url = resolveUploadUrl(message.mediaUrl);
+  if (hasError) {
+    return (
+      <p className="mb-2 text-sm text-[var(--danger)]">
+        {ru.chats.errors.uploadMedia}
+      </p>
+    );
+  }
+
+  if (!objectUrl) {
+    return (
+      <p className="mb-2 text-sm text-[var(--text-muted)]">
+        {ru.chats.loadingMessages}
+      </p>
+    );
+  }
 
   if (message.mediaType === "image") {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
         alt=""
-        className="mb-2 max-h-[320px] w-full max-w-[320px] rounded-md object-cover"
-        src={url}
+        className="mb-2 max-h-[320px] w-full max-w-[320px] rounded-[16px] object-cover"
+        src={objectUrl}
       />
     );
   }
@@ -3058,21 +3318,22 @@ function MessageMedia({ message }: { message: Message }) {
   if (message.mediaType === "video") {
     return (
       <video
-        className="mb-2 max-h-[320px] w-full max-w-[360px] rounded-md bg-black"
+        className="mb-2 max-h-[320px] w-full max-w-[360px] rounded-[16px] bg-black"
         controls
-        src={url}
+        src={objectUrl}
       />
     );
   }
 
   if (message.mediaType === "audio") {
-    return <audio className="mb-2 w-[260px] max-w-full" controls src={url} />;
+    return <audio className="mb-2 w-[260px] max-w-full" controls src={objectUrl} />;
   }
 
   return (
     <a
-      className="mb-2 flex max-w-[280px] items-center gap-3 rounded-md border border-white/10 bg-black/10 px-3 py-2 text-[var(--text-main)] transition hover:bg-black/20"
-      href={url}
+      className="mb-2 flex max-w-[280px] items-center gap-3 rounded-[16px] border border-white/10 bg-black/10 px-3 py-2 text-[var(--text-main)] transition hover:bg-black/20"
+      download={getUploadFilename(message.mediaUrl)}
+      href={objectUrl}
       rel="noreferrer"
       target="_blank"
     >
@@ -3097,7 +3358,7 @@ function Avatar({
   label: string;
 }) {
   return (
-    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-sm font-semibold text-[var(--accent)]">
+    <div className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-sm font-semibold text-[var(--accent)] shadow-[inset_0_0_0_0.5px_var(--border-soft)]">
       {avatarUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -3181,14 +3442,22 @@ function canPostInChat(chat: Chat | null) {
     return false;
   }
 
-  return chat.type !== "channel" || chat.currentUserRole === "owner";
+  if (chat.type === "channel") {
+    return ["owner", "admin"].includes(chat.currentUserRole ?? "");
+  }
+
+  return true;
 }
 
-function canManageSelectedGroup(chat: Chat | null) {
+function canManageSelectedChat(chat: Chat | null) {
   return (
-    chat?.type === "group" &&
+    (chat?.type === "group" || chat?.type === "channel") &&
     ["owner", "admin"].includes(chat.currentUserRole ?? "")
   );
+}
+
+function getChatSettingsLabel(chat: Chat) {
+  return chat.type === "channel" ? ru.chats.channelSettings : ru.chats.groupSettings;
 }
 
 function getRoleLabel(role: string) {
@@ -3275,6 +3544,14 @@ function formatChatListTime(value: string) {
   }).format(date);
 }
 
+function formatJoinedAt(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
 function playFallbackTone() {
   const AudioContextConstructor =
     window.AudioContext ||
@@ -3307,14 +3584,14 @@ function playFallbackTone() {
 
 function getThemeLabel(theme: ThemeMode) {
   if (theme === "light") {
-    return "Light";
+    return ru.settings.appearance.light;
   }
 
   if (theme === "dark") {
-    return "Dark";
+    return ru.settings.appearance.dark;
   }
 
-  return "System";
+  return ru.settings.appearance.system;
 }
 
 function getThemeIcon(theme: ThemeMode) {

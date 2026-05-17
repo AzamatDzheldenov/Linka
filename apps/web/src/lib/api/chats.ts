@@ -16,6 +16,11 @@ export type ChatMember = {
   user: ChatPartner;
 };
 
+export type ChannelSubscriber = {
+  joinedAt: string;
+  user: ChatPartner;
+};
+
 export type Chat = {
   id: string;
   type: ChatType;
@@ -114,13 +119,21 @@ export async function updateChatSettings(
 export async function updateChatMemberRole(
   chatId: string,
   userId: string,
-  role: "admin" | "member",
+  role: "admin" | "member" | "subscriber",
 ) {
   return apiRequest<Chat>(`/chats/${chatId}/members/role`, {
     method: "PATCH",
     body: { userId, role },
   });
 }
+
+export async function getSubscribers(chatId: string) {
+  return apiRequest<ChannelSubscriber[]>(`/chats/${chatId}/subscribers`, {
+    method: "GET",
+  });
+}
+
+export const getChannelSubscribers = getSubscribers;
 
 export async function uploadChatAvatar(chatId: string, file: File) {
   const formData = new FormData();

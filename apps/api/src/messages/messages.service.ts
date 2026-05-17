@@ -1,6 +1,33 @@
-import { ForbiddenException, Injectable } from "@nestjs/common";
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import { access } from "fs/promises";
+import { extname, join } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import { SendMessageDto } from "./dto/send-message.dto";
+
+export const MESSAGE_UPLOAD_DIR = join(
+  __dirname,
+  "..",
+  "..",
+  "uploads",
+  "messages",
+);
+
+const MESSAGE_FILE_ID_PATTERN =
+  /^[a-f0-9-]+\.(jpg|png|webp|mp4|mp3|webm|pdf)$/i;
+const MEDIA_CONTENT_TYPES: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".mp4": "video/mp4",
+  ".mp3": "audio/mpeg",
+  ".webm": "audio/webm",
+  ".pdf": "application/pdf",
+};
 
 type MediaMessageInput = {
   chatId: string;
@@ -20,22 +47,63 @@ export type MessageReceiptUpdate = {
 
 @Injectable()
 export class MessagesService {
+  private readonly messagePageSize = 50;
+
   constructor(private readonly prisma: PrismaService) {}
 
-  async getMessages(userId: string, chatId: string) {
+  async getMessages(userId: string, chatId: string, cursor?: string) {
     await this.assertChatMember(userId, chatId);
 
-    return this.prisma.message.findMany({
+    const cursorMessage = cursor
+      ? await this.prisma.message.findFirst({
+          where: {
+            id: cursor,
+            chatId,
+            deletedAt: null,
+          },
+          select: {
+            id: true,
+            createdAt: true,
+          },
+        })
+      : null;
+
+    if (cursor && !cursorMessage) {
+      throw new BadRequestException("Message cursor is invalid");
+    }
+
+    const fetchedMessages = await this.prisma.message.findMany({
       where: {
         chatId,
         deletedAt: null,
+        ...(cursorMessage
+          ? {
+              OR: [
+                { createdAt: { lt: cursorMessage.createdAt } },
+                {
+                  createdAt: cursorMessage.createdAt,
+                  id: { lt: cursorMessage.id },
+                },
+              ],
+            }
+          : {}),
       },
-      orderBy: {
-        createdAt: "asc",
-      },
-      take: 50,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: this.messagePageSize + 1,
       select: this.messageSelect(),
     });
+
+    const hasMore = fetchedMessages.length > this.messagePageSize;
+    const messages = fetchedMessages
+      .slice(0, this.messagePageSize)
+      .reverse()
+      .map((message) => this.toSafeMessageMediaUrl(message));
+
+    return {
+      messages,
+      hasMore,
+      nextCursor: hasMore ? messages[0]?.id ?? null : null,
+    };
   }
 
   async createMessage(userId: string, dto: SendMessageDto) {
@@ -66,10 +134,12 @@ export class MessagesService {
         select: { id: true },
       });
 
-      return tx.message.findUniqueOrThrow({
+      const createdMessage = await tx.message.findUniqueOrThrow({
         where: { id: message.id },
         select: this.messageSelect(),
       });
+
+      return this.toSafeMessageMediaUrl(createdMessage);
     });
   }
 
@@ -104,10 +174,12 @@ export class MessagesService {
         select: { id: true },
       });
 
-      return tx.message.findUniqueOrThrow({
+      const createdMessage = await tx.message.findUniqueOrThrow({
         where: { id: message.id },
         select: this.messageSelect(),
       });
+
+      return this.toSafeMessageMediaUrl(createdMessage);
     });
   }
 
@@ -142,7 +214,7 @@ export class MessagesService {
       await this.assertChatMember(userId, chatId);
     }
 
-    return this.prisma.message.update({
+    const deletedMessage = await this.prisma.message.update({
       where: { id: messageId },
       data: {
         deletedAt: new Date(),
@@ -152,6 +224,8 @@ export class MessagesService {
       },
       select: this.messageSelect(),
     });
+
+    return this.toSafeMessageMediaUrl(deletedMessage);
   }
 
   async getChatMemberIds(chatId: string) {
@@ -161,6 +235,46 @@ export class MessagesService {
     });
 
     return members.map((member) => member.userId);
+  }
+
+  async getMediaFile(userId: string, fileId: string) {
+    if (!MESSAGE_FILE_ID_PATTERN.test(fileId)) {
+      throw new BadRequestException("Invalid media file id");
+    }
+
+    const message = await this.prisma.message.findFirst({
+      where: {
+        mediaUrl: {
+          in: [`/uploads/messages/${fileId}`, `/messages/media/${fileId}`],
+        },
+        deletedAt: null,
+        chat: {
+          members: {
+            some: { userId },
+          },
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!message) {
+      throw new NotFoundException("Media file not found");
+    }
+
+    const filePath = join(MESSAGE_UPLOAD_DIR, fileId);
+
+    try {
+      await access(filePath);
+    } catch {
+      throw new NotFoundException("Media file not found");
+    }
+
+    return {
+      filePath,
+      contentType: MEDIA_CONTENT_TYPES[extname(fileId).toLowerCase()],
+    };
   }
 
   async assertChatMember(userId: string, chatId: string) {
@@ -179,7 +293,7 @@ export class MessagesService {
     }
   }
 
-  private async assertCanSendMessage(userId: string, chatId: string) {
+  async assertCanSendMessage(userId: string, chatId: string) {
     const membership = await this.prisma.chatMember.findUnique({
       where: {
         chatId_userId: {
@@ -201,8 +315,11 @@ export class MessagesService {
       throw new ForbiddenException("You are not a member of this chat");
     }
 
-    if (membership.chat.type === "channel" && membership.role !== "owner") {
-      throw new ForbiddenException("Only the channel owner can publish");
+    if (
+      membership.chat.type === "channel" &&
+      !["owner", "admin"].includes(membership.role)
+    ) {
+      throw new ForbiddenException("Only channel admins can post");
     }
   }
 
@@ -380,5 +497,24 @@ export class MessagesService {
         },
       },
     } as const;
+  }
+
+  private toSafeMessageMediaUrl<T extends { mediaUrl: string | null }>(
+    message: T,
+  ): T {
+    if (!message.mediaUrl?.startsWith("/uploads/messages/")) {
+      return message;
+    }
+
+    const fileId = message.mediaUrl.split("/").filter(Boolean).at(-1);
+
+    if (!fileId) {
+      return message;
+    }
+
+    return {
+      ...message,
+      mediaUrl: `/messages/media/${fileId}`,
+    };
   }
 }

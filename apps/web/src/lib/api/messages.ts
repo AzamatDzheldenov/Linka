@@ -1,4 +1,4 @@
-import { apiRequest } from "./client";
+import { apiBlobRequest, apiRequest } from "./client";
 
 export type MessageSender = {
   id: string;
@@ -29,8 +29,30 @@ export type MessageReceipt = {
   readAt: string | null;
 };
 
-export async function getMessages(chatId: string) {
-  return apiRequest<Message[]>(`/chats/${chatId}/messages`, {
+export type MessagesPage = {
+  messages: Message[];
+  hasMore: boolean;
+  nextCursor: string | null;
+};
+
+export async function getMessages(chatId: string, cursor?: string) {
+  const params = cursor
+    ? `?${new URLSearchParams({ cursor }).toString()}`
+    : "";
+
+  return apiRequest<MessagesPage>(`/chats/${chatId}/messages${params}`, {
+    method: "GET",
+  });
+}
+
+export async function getMessageMediaBlob(mediaUrl: string) {
+  const fileId = mediaUrl.split("/").filter(Boolean).pop();
+
+  if (!fileId) {
+    throw new Error("Invalid media URL");
+  }
+
+  return apiBlobRequest(`/messages/media/${encodeURIComponent(fileId)}`, {
     method: "GET",
   });
 }

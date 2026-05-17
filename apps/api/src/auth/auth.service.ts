@@ -193,6 +193,18 @@ export class AuthService {
     }
   }
 
+  async logoutAll(userId: string) {
+    const deletedTokens = await this.prisma.refreshToken.deleteMany({
+      where: { userId },
+    });
+
+    return {
+      success: true,
+      message: "Logged out from all sessions",
+      revokedSessions: deletedTokens.count,
+    };
+  }
+
   async getMe(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },

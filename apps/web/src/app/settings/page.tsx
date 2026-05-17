@@ -1,12 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { AnimatePresence, motion } from "framer-motion";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bell,
   Camera,
   Check,
+  ChevronDown,
   Eye,
   Monitor,
   Moon,
@@ -14,7 +17,9 @@ import {
   Shield,
   Sun,
   Languages,
+  LogOut,
   User,
+  X,
 } from "lucide-react";
 import type { Language } from "@/lib/i18n";
 import { useI18n } from "@/providers/i18n-provider";
@@ -29,7 +34,9 @@ import {
   updateUserSettings,
   uploadAvatar,
 } from "@/lib/api/users";
+import { logoutAll } from "@/lib/api/auth";
 import { useAuthStore } from "@/store/auth-store";
+import { AppBottomNav } from "@/components/ui/app-bottom-nav";
 
 type ProfileForm = {
   firstName: string;
@@ -50,6 +57,7 @@ const defaultSettings: Omit<UserSettings, "id" | "userId" | "createdAt" | "updat
 
 export default function SettingsPage() {
   const { language, setLanguage, t: ru } = useI18n();
+  const router = useRouter();
   const currentUser = useAuthStore((state) => state.currentUser);
   const { theme, setTheme } = useTheme();
   const { compactMode, setCompactMode, setTextSize, textSize } = useAppearance();
@@ -64,6 +72,8 @@ export default function SettingsPage() {
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isLogoutAllConfirmOpen, setIsLogoutAllConfirmOpen] = useState(false);
+  const [isLoggingOutAll, setIsLoggingOutAll] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -176,18 +186,33 @@ export default function SettingsPage() {
     void saveRemoteSettings({ ...settings, [key]: value });
   }
 
+  async function handleLogoutAll() {
+    setError(null);
+    setNotice(null);
+    setIsLoggingOutAll(true);
+
+    try {
+      await logoutAll();
+      router.replace("/login");
+    } catch {
+      setError(ru.settings.security.logoutAllError);
+      setIsLoggingOutAll(false);
+      setIsLogoutAllConfirmOpen(false);
+    }
+  }
+
   const fullName = currentUser
     ? [currentUser.firstName, currentUser.lastName].filter(Boolean).join(" ") ||
       currentUser.username
     : ru.settings.sections.profile;
 
   return (
-    <main className="min-h-screen bg-[var(--app-bg)] text-[var(--text-main)]">
-      <header className="sticky top-0 z-20 border-b border-[var(--border-soft)] bg-[var(--panel-bg)]/95 backdrop-blur">
+    <main className="min-h-screen bg-[var(--app-bg)] pb-28 text-[var(--text-main)] lg:pb-0">
+      <header className="sticky top-0 z-20 hidden border-b border-[var(--border-soft)] bg-[var(--panel-floating)]/90 backdrop-blur-xl lg:block">
         <div className="mx-auto flex h-16 w-full max-w-5xl items-center gap-3 px-4">
           <Link
             aria-label={ru.settings.backToChats}
-            className="flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+            className="ios-button flex h-10 w-10 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
             href="/chats"
           >
             <ArrowLeft size={22} />
@@ -206,7 +231,7 @@ export default function SettingsPage() {
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 py-5 lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)]">
+      <div className="mx-auto grid w-full max-w-5xl gap-4 px-4 pb-5 pt-[calc(0.85rem+env(safe-area-inset-top))] lg:grid-cols-[minmax(0,1.05fr)_minmax(320px,0.95fr)] lg:py-5">
         <section className="space-y-4">
           <SettingsSection icon={<User size={19} />} title={ru.settings.sections.profile}>
             <form className="space-y-4" onSubmit={handleProfileSubmit}>
@@ -224,7 +249,7 @@ export default function SettingsPage() {
                     onChange={handleAvatarChange}
                     type="file"
                   />
-                  <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-2xl font-semibold text-[var(--accent)]">
+                  <div className="flex h-20 w-20 items-center justify-center overflow-hidden rounded-full bg-[var(--input-bg)] text-2xl font-semibold text-[var(--accent)] shadow-[inset_0_0_0_0.5px_var(--border-soft)]">
                     {currentUser?.avatarUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
@@ -268,7 +293,7 @@ export default function SettingsPage() {
                 />
               </div>
               <SettingsInput
-                label="Username"
+                label={ru.settings.fields.username}
                 maxLength={20}
                 minLength={3}
                 onChange={(value) =>
@@ -286,7 +311,7 @@ export default function SettingsPage() {
                   {ru.settings.fields.bio}
                 </span>
                 <textarea
-                  className="min-h-24 w-full resize-none rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 py-3 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+                  className="ios-input min-h-24 w-full resize-none px-4 py-3 text-[15px] placeholder:text-[var(--text-soft)]"
                   maxLength={160}
                   onChange={(event) =>
                     setProfileForm((current) => ({
@@ -299,7 +324,7 @@ export default function SettingsPage() {
                 />
               </label>
               <button
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                className="ios-button flex h-11 w-full items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-4 text-[15px] font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-70"
                 disabled={isSavingProfile || isLoading}
                 type="submit"
               >
@@ -342,12 +367,13 @@ export default function SettingsPage() {
           </SettingsSection>
 
           <SettingsSection icon={<Languages size={19} />} title={ru.settings.sections.language}>
-            <SegmentedControl
-              label={ru.settings.sections.language}
-              onChange={(value) => setLanguage(value as Language)}
+            <LanguageDropdown
+              label={ru.settings.language.select}
+              onChange={setLanguage}
               options={[
                 { label: ru.settings.language.russian, value: "ru" },
                 { label: ru.settings.language.uzbek, value: "uz" },
+                { label: ru.settings.language.kyrgyz, value: "ky" },
               ]}
               value={language}
             />
@@ -397,6 +423,21 @@ export default function SettingsPage() {
             />
           </SettingsSection>
 
+          <SettingsSection icon={<Shield size={19} />} title={ru.settings.sections.security}>
+            <ActionRow
+              description={ru.settings.security.logoutAllHint}
+              disabled={isLoggingOutAll}
+              icon={<LogOut size={17} />}
+              label={
+                isLoggingOutAll
+                  ? ru.settings.actions.loggingOutAll
+                  : ru.settings.actions.logoutAll
+              }
+              onClick={() => setIsLogoutAllConfirmOpen(true)}
+              tone="danger"
+            />
+          </SettingsSection>
+
           {notice ? (
             <p className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
               {notice}
@@ -409,6 +450,22 @@ export default function SettingsPage() {
           ) : null}
         </section>
       </div>
+      {isLogoutAllConfirmOpen ? (
+        <ConfirmModal
+          cancelLabel={ru.settings.actions.logoutAllCancel}
+          confirmLabel={
+            isLoggingOutAll
+              ? ru.settings.actions.loggingOutAll
+              : ru.settings.actions.logoutAllConfirm
+          }
+          description={ru.settings.actions.logoutAllConfirmText}
+          isConfirming={isLoggingOutAll}
+          onCancel={() => setIsLogoutAllConfirmOpen(false)}
+          onConfirm={handleLogoutAll}
+          title={ru.settings.actions.logoutAllConfirmTitle}
+        />
+      ) : null}
+      <AppBottomNav />
     </main>
   );
 }
@@ -423,7 +480,7 @@ function SettingsSection({
   title: string;
 }) {
   return (
-    <section className="overflow-hidden rounded-lg border border-[var(--border-soft)] bg-[var(--panel-bg)] shadow-xl shadow-black/10">
+    <section className="ios-grouped">
       <header className="flex items-center gap-3 border-b border-[var(--border-soft)] px-4 py-3">
         <span className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--input-bg)] text-[var(--accent)]">
           {icon}
@@ -458,7 +515,7 @@ function SettingsInput({
         {label}
       </span>
       <input
-        className="h-11 w-full rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-[15px] text-[var(--text-main)] outline-none transition placeholder:text-[var(--text-soft)] focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/25"
+        className="ios-input h-11 w-full px-4 text-[15px] placeholder:text-[var(--text-soft)]"
         maxLength={maxLength}
         minLength={minLength}
         onChange={(event) => onChange(event.target.value)}
@@ -485,7 +542,7 @@ function SegmentedControl({
   return (
     <div>
       <p className="mb-2 text-sm font-medium text-[var(--text-muted)]">{label}</p>
-      <div className="grid rounded-md border border-[var(--border-soft)] bg-[var(--input-bg)] p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
+      <div className="grid rounded-[14px] border border-[var(--border-soft)] bg-[var(--input-bg)] p-1" style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}>
         {options.map((option) => {
           const isSelected = option.value === value;
 
@@ -493,7 +550,7 @@ function SegmentedControl({
             <button
               className={`flex h-9 items-center justify-center gap-1.5 rounded px-2 text-sm font-medium transition ${
                 isSelected
-                  ? "bg-[var(--accent)] text-white shadow-sm"
+                  ? "rounded-[11px] bg-[var(--accent)] text-white shadow-sm"
                   : "text-[var(--text-muted)] hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
               }`}
               key={option.value}
@@ -506,6 +563,218 @@ function SegmentedControl({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function LanguageDropdown({
+  label,
+  onChange,
+  options,
+  value,
+}: {
+  label: string;
+  onChange: (value: Language) => void;
+  options: Array<{ label: string; value: Language }>;
+  value: Language;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selectedOption = options[selectedIndex] ?? options[0];
+
+  useEffect(() => {
+    setActiveIndex(selectedIndex);
+  }, [selectedIndex]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    }
+
+    window.addEventListener("pointerdown", handlePointerDown);
+
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      optionRefs.current[activeIndex]?.focus();
+    });
+  }, [activeIndex, isOpen]);
+
+  function openDropdown(nextIndex = selectedIndex) {
+    setActiveIndex(nextIndex);
+    setIsOpen(true);
+  }
+
+  function closeDropdown() {
+    setIsOpen(false);
+    window.requestAnimationFrame(() => {
+      triggerRef.current?.focus();
+    });
+  }
+
+  function selectOption(index: number) {
+    const option = options[index];
+
+    if (!option) {
+      return;
+    }
+
+    onChange(option.value);
+    closeDropdown();
+  }
+
+  function moveActive(delta: number) {
+    const nextIndex = (activeIndex + delta + options.length) % options.length;
+    setActiveIndex(nextIndex);
+  }
+
+  function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (isOpen) {
+        moveActive(1);
+      } else {
+        openDropdown((selectedIndex + 1) % options.length);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (isOpen) {
+        moveActive(-1);
+      } else {
+        openDropdown((selectedIndex - 1 + options.length) % options.length);
+      }
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (isOpen) {
+        selectOption(activeIndex);
+      } else {
+        openDropdown();
+      }
+      return;
+    }
+
+    if (event.key === "Escape" && isOpen) {
+      event.preventDefault();
+      closeDropdown();
+    }
+  }
+
+  function handleOptionKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      moveActive(1);
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      moveActive(-1);
+      return;
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectOption(activeIndex);
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDropdown();
+    }
+  }
+
+  return (
+    <div ref={rootRef} className="relative">
+      <p className="mb-2 text-sm font-medium text-[var(--text-muted)]">{label}</p>
+      <button
+        aria-expanded={isOpen}
+        aria-haspopup="listbox"
+        className="ios-button flex h-12 w-full items-center gap-3 rounded-[16px] border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-left transition hover:bg-[var(--hover-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/25"
+        onClick={() => (isOpen ? closeDropdown() : openDropdown())}
+        onKeyDown={handleTriggerKeyDown}
+        ref={triggerRef}
+        type="button"
+      >
+        <span className="min-w-0 flex-1 truncate text-[15px] font-semibold text-[var(--text-main)]">
+          {selectedOption.label}
+        </span>
+        <ChevronDown
+          className={`shrink-0 text-[var(--text-muted)] transition ${
+            isOpen ? "rotate-180" : ""
+          }`}
+          size={18}
+        />
+      </button>
+      <AnimatePresence>
+        {isOpen ? (
+          <motion.div
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            className="ios-glass absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 overflow-hidden rounded-[20px] p-1"
+            exit={{ opacity: 0, scale: 0.98, y: -6 }}
+            initial={{ opacity: 0, scale: 0.98, y: -6 }}
+            role="listbox"
+            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {options.map((option, index) => {
+              const isSelected = option.value === value;
+              const isActive = index === activeIndex;
+
+              return (
+                <button
+                  aria-selected={isSelected}
+                  className={`flex h-11 w-full items-center gap-3 rounded-[15px] px-3 text-left text-[15px] transition focus-visible:outline-none ${
+                    isSelected
+                      ? "bg-[var(--active-soft)] text-[var(--accent)]"
+                      : "text-[var(--text-main)]"
+                  } ${isActive ? "bg-[var(--hover-soft)]" : "hover:bg-[var(--hover-soft)]"}`}
+                  key={option.value}
+                  onClick={() => selectOption(index)}
+                  onKeyDown={handleOptionKeyDown}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  ref={(element) => {
+                    optionRefs.current[index] = element;
+                  }}
+                  role="option"
+                  type="button"
+                >
+                  <span className="min-w-0 flex-1 truncate font-medium">
+                    {option.label}
+                  </span>
+                  {isSelected ? <Check size={18} /> : null}
+                </button>
+              );
+            })}
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -523,7 +792,7 @@ function ToggleRow({
 }) {
   return (
     <button
-      className="flex min-h-12 w-full items-center gap-3 rounded-md px-1 text-left transition hover:bg-[var(--hover-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/25"
+      className="flex min-h-12 w-full items-center gap-3 rounded-[14px] px-1 text-left transition hover:bg-[var(--hover-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/25"
       onClick={() => onChange(!checked)}
       type="button"
     >
@@ -535,7 +804,7 @@ function ToggleRow({
       <span className="min-w-0 flex-1 text-[15px] font-medium">{label}</span>
       <span
         className={`relative h-7 w-12 rounded-full transition ${
-          checked ? "bg-[var(--accent)]" : "bg-[var(--input-bg)]"
+          checked ? "bg-[var(--accent)]" : "bg-[var(--input-bg)] shadow-[inset_0_0_0_0.5px_var(--border-soft)]"
         }`}
       >
         <span
@@ -545,6 +814,105 @@ function ToggleRow({
         />
       </span>
     </button>
+  );
+}
+
+function ActionRow({
+  description,
+  disabled = false,
+  icon,
+  label,
+  onClick,
+  tone = "default",
+}: {
+  description?: string;
+  disabled?: boolean;
+  icon?: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  tone?: "default" | "danger";
+}) {
+  return (
+    <button
+      className={`flex min-h-14 w-full items-center gap-3 rounded-[14px] px-1 text-left transition hover:bg-[var(--hover-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/25 disabled:cursor-wait disabled:opacity-70 ${
+        tone === "danger" ? "text-[var(--danger)]" : "text-[var(--text-main)]"
+      }`}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      {icon ? (
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--input-bg)]">
+          {icon}
+        </span>
+      ) : null}
+      <span className="min-w-0 flex-1">
+        <span className="block text-[15px] font-semibold">{label}</span>
+        {description ? (
+          <span className="mt-0.5 block text-sm font-normal text-[var(--text-muted)]">
+            {description}
+          </span>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+function ConfirmModal({
+  cancelLabel,
+  confirmLabel,
+  description,
+  isConfirming,
+  onCancel,
+  onConfirm,
+  title,
+}: {
+  cancelLabel: string;
+  confirmLabel: string;
+  description: string;
+  isConfirming: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 backdrop-blur-sm">
+      <section className="ios-glass w-full max-w-sm overflow-hidden rounded-[24px]">
+        <header className="flex items-center gap-3 border-b border-[var(--border-soft)] px-4 py-3">
+          <h2 className="min-w-0 flex-1 text-[16px] font-semibold">{title}</h2>
+          <button
+            aria-label={cancelLabel}
+            className="flex h-9 w-9 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)] disabled:opacity-50"
+            disabled={isConfirming}
+            onClick={onCancel}
+            type="button"
+          >
+            <X size={19} />
+          </button>
+        </header>
+        <div className="space-y-4 px-4 py-4">
+          <p className="text-sm leading-6 text-[var(--text-muted)]">{description}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              className="h-10 rounded-md border border-[var(--border-soft)] px-4 text-sm font-semibold text-[var(--text-main)] transition hover:bg-[var(--hover-soft)] disabled:opacity-50"
+              disabled={isConfirming}
+              onClick={onCancel}
+              type="button"
+            >
+              {cancelLabel}
+            </button>
+            <button
+              className="h-10 rounded-md bg-[var(--danger)] px-4 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-wait disabled:opacity-70"
+              disabled={isConfirming}
+              onClick={onConfirm}
+              type="button"
+            >
+              {confirmLabel}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
   );
 }
 

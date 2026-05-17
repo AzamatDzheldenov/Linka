@@ -31,7 +31,11 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const storedLanguage = window.localStorage.getItem(LANGUAGE_STORAGE_KEY);
 
-    if (storedLanguage === "ru" || storedLanguage === "uz") {
+    if (
+      storedLanguage === "ru" ||
+      storedLanguage === "uz" ||
+      storedLanguage === "ky"
+    ) {
       setLanguageState(storedLanguage);
       setActiveLanguage(storedLanguage);
       document.documentElement.lang = storedLanguage;

@@ -9,6 +9,7 @@ import { NestExpressApplication } from "@nestjs/platform-express";
 import cookieParser from "cookie-parser";
 import { join } from "path";
 import { AppModule } from "./app.module";
+import { ThrottlerExceptionFilter } from "./throttler-exception.filter";
 
 config();
 
@@ -16,9 +17,13 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
   app.use(cookieParser());
-  app.useStaticAssets(join(__dirname, "..", "uploads"), {
-    prefix: "/uploads/",
+  app.useStaticAssets(join(__dirname, "..", "uploads", "avatars"), {
+    prefix: "/uploads/avatars/",
   });
+  app.useStaticAssets(join(__dirname, "..", "uploads", "chats"), {
+    prefix: "/uploads/chats/",
+  });
+  app.useGlobalFilters(new ThrottlerExceptionFilter());
   app.enableCors({
     origin: getCorsOrigins(),
     credentials: true,

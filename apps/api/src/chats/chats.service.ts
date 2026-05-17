@@ -380,9 +380,23 @@ export class ChatsService {
     chatId: string,
     dto: UpdateChatMemberRoleDto,
   ) {
+    return this.updateMemberRoleByUserId(
+      currentUserId,
+      chatId,
+      dto.userId,
+      dto.role,
+    );
+  }
+
+  async updateMemberRoleByUserId(
+    currentUserId: string,
+    chatId: string,
+    userId: string,
+    role: "admin" | "member" | "subscriber",
+  ) {
     await this.assertOwner(currentUserId, chatId);
 
-    if (currentUserId === dto.userId) {
+    if (currentUserId === userId) {
       throw new BadRequestException("Owner role cannot be changed");
     }
 
@@ -390,7 +404,7 @@ export class ChatsService {
       where: {
         chatId_userId: {
           chatId,
-          userId: dto.userId,
+          userId,
         },
       },
       select: {
@@ -399,22 +413,33 @@ export class ChatsService {
       },
     });
 
-    if (!membership || membership.chat.type !== "group") {
-      throw new BadRequestException("Only group members can become admins");
+    if (!membership || !["group", "channel"].includes(membership.chat.type)) {
+      throw new BadRequestException("Only shared chat members can change roles");
     }
 
     if (membership.role === "owner") {
       throw new BadRequestException("Owner role cannot be changed");
     }
 
+    if (membership.chat.type === "group" && !["admin", "member"].includes(role)) {
+      throw new BadRequestException("Group role must be admin or member");
+    }
+
+    if (
+      membership.chat.type === "channel" &&
+      !["admin", "subscriber"].includes(role)
+    ) {
+      throw new BadRequestException("Channel role must be admin or subscriber");
+    }
+
     await this.prisma.chatMember.update({
       where: {
         chatId_userId: {
           chatId,
-          userId: dto.userId,
+          userId,
         },
       },
-      data: { role: dto.role },
+      data: { role },
     });
 
     const chat = await this.prisma.chat.findUniqueOrThrow({
@@ -423,6 +448,74 @@ export class ChatsService {
     });
 
     return this.toChatResponse(chat, currentUserId);
+  }
+
+  async removeMember(currentUserId: string, chatId: string, userId: string) {
+    await this.assertCanManageChat(currentUserId, chatId);
+
+    if (currentUserId === userId) {
+      throw new BadRequestException("Owner or admin cannot remove themselves");
+    }
+
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        role: true,
+        chat: { select: { type: true } },
+      },
+    });
+
+    if (!membership || !["group", "channel"].includes(membership.chat.type)) {
+      throw new BadRequestException("Members can only be removed from shared chats");
+    }
+
+    if (membership.role === "owner") {
+      throw new BadRequestException("Owner cannot be removed");
+    }
+
+    await this.prisma.chatMember.delete({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+    });
+
+    const chat = await this.prisma.chat.findUniqueOrThrow({
+      where: { id: chatId },
+      include: this.chatInclude(),
+    });
+
+    return this.toChatResponse(chat, currentUserId);
+  }
+
+  async getChannelSubscribers(currentUserId: string, chatId: string) {
+    await this.assertChannelMember(currentUserId, chatId);
+
+    return this.prisma.chatMember.findMany({
+      where: {
+        chatId,
+        role: "subscriber",
+      },
+      orderBy: { joinedAt: "desc" },
+      select: {
+        joinedAt: true,
+        user: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
   }
 
   async getChats(currentUserId: string) {
@@ -595,10 +688,32 @@ export class ChatsService {
     }
 
     if (
-      membership.chat.type !== "group" ||
+      !["group", "channel"].includes(membership.chat.type) ||
       !["owner", "admin"].includes(membership.role)
     ) {
-      throw new ForbiddenException("Only group admins can manage this chat");
+      throw new ForbiddenException("Only chat admins can manage this chat");
+    }
+  }
+
+  private async assertChannelMember(userId: string, chatId: string) {
+    const membership = await this.prisma.chatMember.findUnique({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      select: {
+        chat: { select: { type: true } },
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException("You are not a member of this chat");
+    }
+
+    if (membership.chat.type !== "channel") {
+      throw new BadRequestException("Subscribers are only available for channels");
     }
   }
 
@@ -618,10 +733,10 @@ export class ChatsService {
 
     if (
       !membership ||
-      membership.chat.type !== "group" ||
+      !["group", "channel"].includes(membership.chat.type) ||
       membership.role !== "owner"
     ) {
-      throw new ForbiddenException("Only the group owner can change admins");
+      throw new ForbiddenException("Only the chat owner can change admins");
     }
   }
 }
