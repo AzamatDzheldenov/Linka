@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   Bell,
@@ -54,6 +55,9 @@ const defaultSettings: Omit<UserSettings, "id" | "userId" | "createdAt" | "updat
   soundEnabled: true,
   requireGroupInviteApproval: false,
 };
+
+const LANGUAGE_MENU_GAP = 8;
+const LANGUAGE_MENU_MARGIN = 12;
 
 export default function SettingsPage() {
   const { language, setLanguage, t: ru } = useI18n();
@@ -579,15 +583,28 @@ function LanguageDropdown({
   value: Language;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isPortalReady, setIsPortalReady] = useState(false);
+  const [menuPosition, setMenuPosition] = useState<{
+    left: number;
+    maxHeight: number;
+    placement: "top" | "bottom";
+    top: number;
+    width: number;
+  } | null>(null);
   const selectedIndex = Math.max(
     0,
     options.findIndex((option) => option.value === value),
   );
   const [activeIndex, setActiveIndex] = useState(selectedIndex);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const selectedOption = options[selectedIndex] ?? options[0];
+
+  useEffect(() => {
+    setIsPortalReady(true);
+  }, []);
 
   useEffect(() => {
     setActiveIndex(selectedIndex);
@@ -595,11 +612,37 @@ function LanguageDropdown({
 
   useEffect(() => {
     if (!isOpen) {
+      setMenuPosition(null);
+      return;
+    }
+
+    updateMenuPosition();
+
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    window.visualViewport?.addEventListener("resize", updateMenuPosition);
+    window.visualViewport?.addEventListener("scroll", updateMenuPosition);
+
+    return () => {
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+      window.visualViewport?.removeEventListener("resize", updateMenuPosition);
+      window.visualViewport?.removeEventListener("scroll", updateMenuPosition);
+    };
+  }, [isOpen, options.length]);
+
+  useEffect(() => {
+    if (!isOpen) {
       return;
     }
 
     function handlePointerDown(event: PointerEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+
+      if (
+        !rootRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
         setIsOpen(false);
       }
     }
@@ -612,14 +655,14 @@ function LanguageDropdown({
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen) {
+    if (!isOpen || !menuPosition) {
       return;
     }
 
     window.requestAnimationFrame(() => {
       optionRefs.current[activeIndex]?.focus();
     });
-  }, [activeIndex, isOpen]);
+  }, [activeIndex, isOpen, menuPosition]);
 
   function openDropdown(nextIndex = selectedIndex) {
     setActiveIndex(nextIndex);
@@ -647,6 +690,47 @@ function LanguageDropdown({
   function moveActive(delta: number) {
     const nextIndex = (activeIndex + delta + options.length) % options.length;
     setActiveIndex(nextIndex);
+  }
+
+  function updateMenuPosition() {
+    const trigger = triggerRef.current;
+
+    if (!trigger) {
+      return;
+    }
+
+    const rect = trigger.getBoundingClientRect();
+    const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+    const menuHeight = options.length * 44 + 8;
+    const safeTop = LANGUAGE_MENU_MARGIN;
+    const safeBottom = viewportHeight - LANGUAGE_MENU_MARGIN;
+    const availableWidth = viewportWidth - LANGUAGE_MENU_MARGIN * 2;
+    const width = Math.min(rect.width, availableWidth);
+    const left = Math.min(
+      Math.max(rect.left, LANGUAGE_MENU_MARGIN),
+      viewportWidth - width - LANGUAGE_MENU_MARGIN,
+    );
+    const spaceBelow = safeBottom - rect.bottom - LANGUAGE_MENU_GAP;
+    const spaceAbove = rect.top - safeTop - LANGUAGE_MENU_GAP;
+    const placement =
+      spaceBelow < menuHeight && spaceAbove > spaceBelow ? "top" : "bottom";
+    const unclampedTop =
+      placement === "top"
+        ? rect.top - LANGUAGE_MENU_GAP - menuHeight
+        : rect.bottom + LANGUAGE_MENU_GAP;
+    const top = Math.min(
+      Math.max(unclampedTop, safeTop),
+      Math.max(safeTop, safeBottom - menuHeight),
+    );
+
+    setMenuPosition({
+      left,
+      maxHeight: Math.max(96, safeBottom - safeTop),
+      placement,
+      top,
+      width,
+    });
   }
 
   function handleTriggerKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
@@ -711,6 +795,78 @@ function LanguageDropdown({
     }
   }
 
+  const menu =
+    isPortalReady && isOpen
+      ? createPortal(
+          <AnimatePresence>
+            {menuPosition ? (
+              <motion.div
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                className="ios-glass fixed z-[100] overflow-y-auto rounded-[20px] p-1"
+                exit={{
+                  opacity: 0,
+                  scale: 0.98,
+                  y: menuPosition.placement === "top" ? 6 : -6,
+                }}
+                initial={{
+                  opacity: 0,
+                  scale: 0.98,
+                  y: menuPosition.placement === "top" ? 6 : -6,
+                }}
+                ref={menuRef}
+                role="listbox"
+                style={{
+                  left: menuPosition.left,
+                  maxHeight: menuPosition.maxHeight,
+                  top: menuPosition.top,
+                  transformOrigin:
+                    menuPosition.placement === "top"
+                      ? "bottom center"
+                      : "top center",
+                  width: menuPosition.width,
+                }}
+                transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+              >
+                {options.map((option, index) => {
+                  const isSelected = option.value === value;
+                  const isActive = index === activeIndex;
+
+                  return (
+                    <button
+                      aria-selected={isSelected}
+                      className={`flex h-11 w-full items-center gap-3 rounded-[15px] px-3 text-left text-[15px] transition focus-visible:outline-none ${
+                        isSelected
+                          ? "bg-[var(--active-soft)] text-[var(--accent)]"
+                          : "text-[var(--text-main)]"
+                      } ${
+                        isActive
+                          ? "bg-[var(--hover-soft)]"
+                          : "hover:bg-[var(--hover-soft)]"
+                      }`}
+                      key={option.value}
+                      onClick={() => selectOption(index)}
+                      onKeyDown={handleOptionKeyDown}
+                      onMouseEnter={() => setActiveIndex(index)}
+                      ref={(element) => {
+                        optionRefs.current[index] = element;
+                      }}
+                      role="option"
+                      type="button"
+                    >
+                      <span className="min-w-0 flex-1 truncate font-medium">
+                        {option.label}
+                      </span>
+                      {isSelected ? <Check size={18} /> : null}
+                    </button>
+                  );
+                })}
+              </motion.div>
+            ) : null}
+          </AnimatePresence>,
+          document.body,
+        )
+      : null;
+
   return (
     <div ref={rootRef} className="relative">
       <p className="mb-2 text-sm font-medium text-[var(--text-muted)]">{label}</p>
@@ -733,48 +889,7 @@ function LanguageDropdown({
           size={18}
         />
       </button>
-      <AnimatePresence>
-        {isOpen ? (
-          <motion.div
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            className="ios-glass absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 overflow-hidden rounded-[20px] p-1"
-            exit={{ opacity: 0, scale: 0.98, y: -6 }}
-            initial={{ opacity: 0, scale: 0.98, y: -6 }}
-            role="listbox"
-            transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-          >
-            {options.map((option, index) => {
-              const isSelected = option.value === value;
-              const isActive = index === activeIndex;
-
-              return (
-                <button
-                  aria-selected={isSelected}
-                  className={`flex h-11 w-full items-center gap-3 rounded-[15px] px-3 text-left text-[15px] transition focus-visible:outline-none ${
-                    isSelected
-                      ? "bg-[var(--active-soft)] text-[var(--accent)]"
-                      : "text-[var(--text-main)]"
-                  } ${isActive ? "bg-[var(--hover-soft)]" : "hover:bg-[var(--hover-soft)]"}`}
-                  key={option.value}
-                  onClick={() => selectOption(index)}
-                  onKeyDown={handleOptionKeyDown}
-                  onMouseEnter={() => setActiveIndex(index)}
-                  ref={(element) => {
-                    optionRefs.current[index] = element;
-                  }}
-                  role="option"
-                  type="button"
-                >
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {option.label}
-                  </span>
-                  {isSelected ? <Check size={18} /> : null}
-                </button>
-              );
-            })}
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+      {menu}
     </div>
   );
 }

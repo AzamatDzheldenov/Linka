@@ -17,6 +17,12 @@ export class MessagesEventsService {
     this.server?.to(this.getRoomName(chatId)).emit("message:updated", message);
   }
 
+  emitMessageReactionUpdated(chatId: string, payload: unknown) {
+    this.server
+      ?.to(this.getRoomName(chatId))
+      .emit("message_reaction_updated", payload);
+  }
+
   emitChatNewMessage(userId: string, message: unknown) {
     this.emitToUser(userId, "chat:newMessage", message);
   }

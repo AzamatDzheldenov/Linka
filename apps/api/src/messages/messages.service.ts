@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -8,6 +10,10 @@ import { access } from "fs/promises";
 import { extname, join } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import { SendMessageDto } from "./dto/send-message.dto";
+import {
+  SUPPORTED_MESSAGE_REACTIONS,
+  SupportedMessageReaction,
+} from "./message-reactions.constants";
 
 export const MESSAGE_UPLOAD_DIR = join(
   __dirname,
@@ -34,6 +40,7 @@ type MediaMessageInput = {
   mediaUrl: string;
   mediaType: "image" | "video" | "audio" | "document";
   text?: string;
+  replyToMessageId?: string;
 };
 
 export type MessageReceiptUpdate = {
@@ -45,9 +52,27 @@ export type MessageReceiptUpdate = {
   readAt?: Date;
 };
 
+type ReactionUserPreview = {
+  id: string;
+  username: string;
+  displayName: string | null;
+  nameEmoji: string | null;
+  avatarUrl: string | null;
+};
+
+export type MessageReactionGroup = {
+  emoji: SupportedMessageReaction;
+  count: number;
+  reactedByMe: boolean;
+  usersPreview: ReactionUserPreview[];
+};
+
 @Injectable()
 export class MessagesService {
   private readonly messagePageSize = 50;
+  private readonly reactionWindowMs = 10_000;
+  private readonly maxReactionsPerWindow = 20;
+  private readonly reactionAttempts = new Map<string, number[]>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -97,7 +122,7 @@ export class MessagesService {
     const messages = fetchedMessages
       .slice(0, this.messagePageSize)
       .reverse()
-      .map((message) => this.toSafeMessageMediaUrl(message));
+      .map((message) => this.toMessageResponse(message, userId));
 
     return {
       messages,
@@ -108,6 +133,7 @@ export class MessagesService {
 
   async createMessage(userId: string, dto: SendMessageDto) {
     await this.assertCanSendMessage(userId, dto.chatId);
+    await this.assertValidReplyTarget(dto.chatId, dto.replyToMessageId);
 
     return this.prisma.$transaction(async (tx) => {
       const message = await tx.message.create({
@@ -115,6 +141,7 @@ export class MessagesService {
           chatId: dto.chatId,
           senderId: userId,
           text: dto.text.trim(),
+          replyToMessageId: dto.replyToMessageId,
         },
         select: this.messageSelect(),
       });
@@ -139,12 +166,13 @@ export class MessagesService {
         select: this.messageSelect(),
       });
 
-      return this.toSafeMessageMediaUrl(createdMessage);
+      return this.toMessageResponse(createdMessage, userId);
     });
   }
 
   async createMediaMessage(userId: string, input: MediaMessageInput) {
     await this.assertCanSendMessage(userId, input.chatId);
+    await this.assertValidReplyTarget(input.chatId, input.replyToMessageId);
 
     return this.prisma.$transaction(async (tx) => {
       const text = input.text?.trim() || null;
@@ -155,6 +183,7 @@ export class MessagesService {
           text,
           mediaUrl: input.mediaUrl,
           mediaType: input.mediaType,
+          replyToMessageId: input.replyToMessageId,
         },
         select: this.messageSelect(),
       });
@@ -179,7 +208,94 @@ export class MessagesService {
         select: this.messageSelect(),
       });
 
-      return this.toSafeMessageMediaUrl(createdMessage);
+      return this.toMessageResponse(createdMessage, userId);
+    });
+  }
+
+  async forwardMessage(
+    userId: string,
+    messageId: string,
+    targetChatIds: string[],
+  ) {
+    const sourceMessage = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        chat: {
+          members: {
+            some: { userId },
+          },
+        },
+      },
+      select: {
+        id: true,
+        chatId: true,
+        senderId: true,
+        text: true,
+        mediaUrl: true,
+        mediaType: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!sourceMessage) {
+      throw new ForbiddenException("Message not found");
+    }
+
+    if (sourceMessage.deletedAt) {
+      throw new BadRequestException("cannot forward deleted message");
+    }
+
+    const uniqueTargetChatIds = [...new Set(targetChatIds)];
+
+    for (const targetChatId of uniqueTargetChatIds) {
+      try {
+        await this.assertCanSendMessage(userId, targetChatId);
+      } catch {
+        throw new ForbiddenException("no permission to post in target chat");
+      }
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const createdMessages = [];
+
+      for (const targetChatId of uniqueTargetChatIds) {
+        const message = await tx.message.create({
+          data: {
+            chatId: targetChatId,
+            senderId: userId,
+            text: sourceMessage.text,
+            mediaUrl: sourceMessage.mediaUrl,
+            mediaType: sourceMessage.mediaType,
+            forwardedFromMessageId: sourceMessage.id,
+            forwardedFromUserId: sourceMessage.senderId,
+            forwardedFromChatId: sourceMessage.chatId,
+          },
+          select: this.messageSelect(),
+        });
+
+        const recipientIds = await this.getReceiptRecipientIds(targetChatId, userId);
+        await tx.messageReceipt.createMany({
+          data: recipientIds.map((recipientId) => ({
+            messageId: message.id,
+            userId: recipientId,
+          })),
+          skipDuplicates: true,
+        });
+
+        await tx.chat.update({
+          where: { id: targetChatId },
+          data: { updatedAt: new Date() },
+          select: { id: true },
+        });
+
+        const createdMessage = await tx.message.findUniqueOrThrow({
+          where: { id: message.id },
+          select: this.messageSelect(),
+        });
+        createdMessages.push(this.toMessageResponse(createdMessage, userId));
+      }
+
+      return createdMessages;
     });
   }
 
@@ -225,7 +341,83 @@ export class MessagesService {
       select: this.messageSelect(),
     });
 
-    return this.toSafeMessageMediaUrl(deletedMessage);
+    return this.toMessageResponse(deletedMessage, userId);
+  }
+
+  async toggleMessageReaction(
+    userId: string,
+    messageId: string,
+    emoji: string,
+  ) {
+    this.assertReactionRateLimit(userId);
+    const supportedEmoji = this.assertSupportedReaction(emoji);
+    const message = await this.assertCanReactToMessage(userId, messageId);
+
+    await this.prisma.$transaction(async (tx) => {
+      const existingReaction = await tx.messageReaction.findUnique({
+        where: {
+          userId_messageId_emoji: {
+            userId,
+            messageId,
+            emoji: supportedEmoji,
+          },
+        },
+        select: { id: true },
+      });
+
+      if (existingReaction) {
+        await tx.messageReaction.delete({
+          where: { id: existingReaction.id },
+        });
+        return;
+      }
+
+      await tx.messageReaction.create({
+        data: {
+          messageId,
+          userId,
+          emoji: supportedEmoji,
+        },
+        select: { id: true },
+      });
+    });
+
+    return {
+      messageId,
+      chatId: message.chatId,
+      reactions: await this.getMessageReactions(userId, messageId),
+    };
+  }
+
+  async deleteMessageReaction(userId: string, messageId: string, emoji: string) {
+    this.assertReactionRateLimit(userId);
+    const supportedEmoji = this.assertSupportedReaction(emoji);
+    const message = await this.assertCanReactToMessage(userId, messageId);
+
+    await this.prisma.messageReaction.deleteMany({
+      where: {
+        messageId,
+        userId,
+        emoji: supportedEmoji,
+      },
+    });
+
+    return {
+      messageId,
+      chatId: message.chatId,
+      reactions: await this.getMessageReactions(userId, messageId),
+    };
+  }
+
+  async getMessageReactions(userId: string, messageId: string) {
+    await this.assertCanReactToMessage(userId, messageId);
+    const reactions = await this.prisma.messageReaction.findMany({
+      where: { messageId },
+      orderBy: { createdAt: "asc" },
+      select: this.reactionSelect(),
+    });
+
+    return this.toReactionGroups(reactions, userId);
   }
 
   async getChatMemberIds(chatId: string) {
@@ -468,6 +660,116 @@ export class MessagesService {
     return members.map((member) => member.userId);
   }
 
+  private async assertValidReplyTarget(
+    chatId: string,
+    replyToMessageId?: string,
+  ) {
+    if (!replyToMessageId) {
+      return;
+    }
+
+    const replyToMessage = await this.prisma.message.findUnique({
+      where: { id: replyToMessageId },
+      select: {
+        id: true,
+        chatId: true,
+        deletedAt: true,
+      },
+    });
+
+    if (!replyToMessage) {
+      throw new BadRequestException("Reply message not found");
+    }
+
+    if (replyToMessage.chatId !== chatId) {
+      throw new BadRequestException("cannot reply to message from another chat");
+    }
+
+    if (replyToMessage.deletedAt) {
+      throw new BadRequestException("cannot reply to deleted message");
+    }
+  }
+
+  private async assertCanReactToMessage(userId: string, messageId: string) {
+    const message = await this.prisma.message.findUnique({
+      where: { id: messageId },
+      select: {
+        id: true,
+        chatId: true,
+        deletedAt: true,
+        chat: {
+          select: {
+            members: {
+              where: { userId },
+              select: { id: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!message) {
+      throw new NotFoundException("message not found");
+    }
+
+    if (!message.chat.members.length) {
+      throw new ForbiddenException("no access to message");
+    }
+
+    if (message.deletedAt) {
+      throw new BadRequestException("cannot react to deleted message");
+    }
+
+    return message;
+  }
+
+  private assertSupportedReaction(emoji: string): SupportedMessageReaction {
+    if (
+      !SUPPORTED_MESSAGE_REACTIONS.includes(
+        emoji as SupportedMessageReaction,
+      )
+    ) {
+      throw new BadRequestException("unsupported reaction");
+    }
+
+    return emoji as SupportedMessageReaction;
+  }
+
+  private assertReactionRateLimit(userId: string) {
+    const now = Date.now();
+    const recentAttempts = (this.reactionAttempts.get(userId) ?? []).filter(
+      (timestamp) => now - timestamp < this.reactionWindowMs,
+    );
+
+    if (recentAttempts.length >= this.maxReactionsPerWindow) {
+      this.reactionAttempts.set(userId, recentAttempts);
+      throw new HttpException("Too many reactions", HttpStatus.TOO_MANY_REQUESTS);
+    }
+
+    recentAttempts.push(now);
+    this.reactionAttempts.set(userId, recentAttempts);
+  }
+
+  private userPreviewSelect() {
+    return {
+      id: true,
+      username: true,
+      displayName: true,
+      nameEmoji: true,
+      avatarUrl: true,
+    } as const;
+  }
+
+  private reactionSelect() {
+    return {
+      emoji: true,
+      userId: true,
+      user: {
+        select: this.userPreviewSelect(),
+      },
+    } as const;
+  }
+
   private messageSelect() {
     return {
       id: true,
@@ -476,17 +778,38 @@ export class MessagesService {
       text: true,
       mediaUrl: true,
       mediaType: true,
+      replyToMessageId: true,
+      forwardedFromMessageId: true,
+      forwardedFromUserId: true,
+      forwardedFromChatId: true,
       createdAt: true,
       updatedAt: true,
       editedAt: true,
       deletedAt: true,
       sender: {
+        select: this.userPreviewSelect(),
+      },
+      replyToMessage: {
         select: {
           id: true,
-          username: true,
-          displayName: true,
-          nameEmoji: true,
-          avatarUrl: true,
+          senderId: true,
+          text: true,
+          mediaUrl: true,
+          mediaType: true,
+          deletedAt: true,
+          sender: {
+            select: this.userPreviewSelect(),
+          },
+        },
+      },
+      forwardedFromUser: {
+        select: this.userPreviewSelect(),
+      },
+      forwardedFromChat: {
+        select: {
+          id: true,
+          type: true,
+          title: true,
         },
       },
       receipts: {
@@ -496,25 +819,109 @@ export class MessagesService {
           readAt: true,
         },
       },
+      reactions: {
+        orderBy: { createdAt: "asc" },
+        select: this.reactionSelect(),
+      },
     } as const;
   }
 
-  private toSafeMessageMediaUrl<T extends { mediaUrl: string | null }>(
-    message: T,
-  ): T {
-    if (!message.mediaUrl?.startsWith("/uploads/messages/")) {
-      return message;
-    }
-
-    const fileId = message.mediaUrl.split("/").filter(Boolean).at(-1);
-
-    if (!fileId) {
-      return message;
-    }
-
-    return {
+  private toMessageResponse(message: any, currentUserId: string) {
+    const normalizedMessage = {
       ...message,
-      mediaUrl: `/messages/media/${fileId}`,
+      mediaUrl: this.toSafeMediaUrl(message.mediaUrl),
+      reactions: this.toReactionGroups(message.reactions ?? [], currentUserId),
+      replyTo: message.replyToMessage
+        ? {
+            id: message.replyToMessage.id,
+            senderId: message.replyToMessage.senderId,
+            sender: message.replyToMessage.sender,
+            text: message.replyToMessage.deletedAt
+              ? null
+              : message.replyToMessage.text,
+            mediaUrl: message.replyToMessage.deletedAt
+              ? null
+              : this.toSafeMediaUrl(message.replyToMessage.mediaUrl),
+            mediaType: message.replyToMessage.deletedAt
+              ? null
+              : message.replyToMessage.mediaType,
+            deletedAt: message.replyToMessage.deletedAt,
+          }
+        : null,
+      forwardedFrom: message.forwardedFromUser
+        ? {
+            messageId: message.forwardedFromMessageId,
+            userId: message.forwardedFromUserId,
+            chatId: message.forwardedFromChatId,
+            sender: message.forwardedFromUser,
+            label: "Forwarded message",
+            chatTitle:
+              message.forwardedFromChat?.type === "channel" ||
+              message.forwardedFromChat?.type === "group"
+                ? message.forwardedFromChat.title
+                : null,
+          }
+        : null,
     };
+
+    delete normalizedMessage.replyToMessage;
+    delete normalizedMessage.forwardedFromUser;
+    delete normalizedMessage.forwardedFromChat;
+
+    return normalizedMessage;
+  }
+
+  private toSafeMediaUrl(mediaUrl: string | null) {
+    if (!mediaUrl?.startsWith("/uploads/messages/")) {
+      return mediaUrl;
+    }
+
+    const fileId = mediaUrl.split("/").filter(Boolean).at(-1);
+
+    return fileId ? `/messages/media/${fileId}` : mediaUrl;
+  }
+
+  private toReactionGroups(
+    reactions: Array<{
+      emoji: string;
+      userId: string;
+      user: ReactionUserPreview;
+    }>,
+    currentUserId: string,
+  ): MessageReactionGroup[] {
+    const groups = new Map<SupportedMessageReaction, MessageReactionGroup>();
+
+    reactions.forEach((reaction) => {
+      if (
+        !SUPPORTED_MESSAGE_REACTIONS.includes(
+          reaction.emoji as SupportedMessageReaction,
+        )
+      ) {
+        return;
+      }
+
+      const emoji = reaction.emoji as SupportedMessageReaction;
+      const group =
+        groups.get(emoji) ??
+        {
+          emoji,
+          count: 0,
+          reactedByMe: false,
+          usersPreview: [],
+        };
+
+      group.count += 1;
+      group.reactedByMe = group.reactedByMe || reaction.userId === currentUserId;
+
+      if (group.usersPreview.length < 3) {
+        group.usersPreview.push(reaction.user);
+      }
+
+      groups.set(emoji, group);
+    });
+
+    return SUPPORTED_MESSAGE_REACTIONS.map((emoji) => groups.get(emoji)).filter(
+      (group): group is MessageReactionGroup => Boolean(group),
+    );
   }
 }

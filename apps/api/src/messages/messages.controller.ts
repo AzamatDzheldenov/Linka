@@ -21,6 +21,8 @@ import { mkdir, unlink, writeFile } from "fs/promises";
 import { memoryStorage } from "multer";
 import { join } from "path";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
+import { ForwardMessageDto } from "./dto/forward-message.dto";
+import { ToggleMessageReactionDto } from "./dto/toggle-message-reaction.dto";
 import { MessagesEventsService } from "./messages-events.service";
 import { MESSAGE_UPLOAD_DIR, MessagesService } from "./messages.service";
 
@@ -101,6 +103,7 @@ export class MessagesController {
     @Param("chatId") chatId: string,
     @UploadedFile() file?: UploadedMediaFile,
     @Body("text") text?: string,
+    @Body("replyToMessageId") replyToMessageId?: string,
   ) {
     if (!file) {
       throw new BadRequestException("Media file is required");
@@ -121,6 +124,7 @@ export class MessagesController {
         mediaUrl: `/messages/media/${filename}`,
         mediaType: getMediaType(file.mimetype),
         text,
+        replyToMessageId,
       });
 
       this.messagesEventsService.emitNewMessage(chatId, message);
@@ -140,7 +144,71 @@ export class MessagesController {
 @SkipThrottle({ short: true })
 @UseGuards(JwtAuthGuard)
 export class MessageMediaController {
-  constructor(private readonly messagesService: MessagesService) {}
+  constructor(
+    private readonly messagesService: MessagesService,
+    private readonly messagesEventsService: MessagesEventsService,
+  ) {}
+
+  @Post(":messageId/forward")
+  async forwardMessage(
+    @Req() request: AuthenticatedRequest,
+    @Param("messageId") messageId: string,
+    @Body() dto: ForwardMessageDto,
+  ) {
+    const messages = await this.messagesService.forwardMessage(
+      request.user.id,
+      messageId,
+      dto.targetChatIds,
+    );
+
+    for (const message of messages) {
+      this.messagesEventsService.emitNewMessage(message.chatId, message);
+      const memberIds = await this.messagesService.getChatMemberIds(message.chatId);
+      memberIds.forEach((memberId) => {
+        this.messagesEventsService.emitChatNewMessage(memberId, message);
+      });
+    }
+
+    return { messages };
+  }
+
+  @Post(":messageId/reactions")
+  async toggleMessageReaction(
+    @Req() request: AuthenticatedRequest,
+    @Param("messageId") messageId: string,
+    @Body() dto: ToggleMessageReactionDto,
+  ) {
+    const payload = await this.messagesService.toggleMessageReaction(
+      request.user.id,
+      messageId,
+      dto.emoji,
+    );
+    this.messagesEventsService.emitMessageReactionUpdated(payload.chatId, payload);
+    return payload;
+  }
+
+  @Delete(":messageId/reactions/:emoji")
+  async deleteMessageReaction(
+    @Req() request: AuthenticatedRequest,
+    @Param("messageId") messageId: string,
+    @Param("emoji") emoji: string,
+  ) {
+    const payload = await this.messagesService.deleteMessageReaction(
+      request.user.id,
+      messageId,
+      emoji,
+    );
+    this.messagesEventsService.emitMessageReactionUpdated(payload.chatId, payload);
+    return payload;
+  }
+
+  @Get(":messageId/reactions")
+  getMessageReactions(
+    @Req() request: AuthenticatedRequest,
+    @Param("messageId") messageId: string,
+  ) {
+    return this.messagesService.getMessageReactions(request.user.id, messageId);
+  }
 
   @Get("media/:fileId")
   async getMedia(

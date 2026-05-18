@@ -7,6 +7,7 @@ import {
   Camera,
   Check,
   ChevronLeft,
+  Forward,
   Image,
   LogOut,
   Megaphone,
@@ -14,7 +15,9 @@ import {
   Mic,
   Monitor,
   Moon,
+  MoreHorizontal,
   Plus,
+  Reply,
   Search,
   SendHorizontal,
   Settings,
@@ -46,10 +49,15 @@ import {
 import { API_BASE_URL, ApiError } from "@/lib/api/client";
 import {
   deleteMessage,
+  forwardMessage,
   getMessageMediaBlob,
   getMessages,
   Message,
+  MessagePreview,
+  MessageReactionGroup,
+  MessageReactionUpdate,
   sendMediaMessage,
+  toggleMessageReaction,
 } from "@/lib/api/messages";
 import { logout } from "@/lib/api/auth";
 import {
@@ -69,6 +77,10 @@ import { AuthUser, useAuthStore } from "@/store/auth-store";
 import { ThemeMode, useTheme } from "@/providers/theme-provider";
 import { LinkaBrand, LinkaIcon } from "@/components/linka-brand";
 import { AppBottomNav } from "@/components/ui/app-bottom-nav";
+import {
+  QUICK_MESSAGE_REACTION,
+  SUPPORTED_MESSAGE_REACTIONS,
+} from "@/lib/message-reactions";
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "linka.sidebar.width";
 const MIN_SIDEBAR_WIDTH = 72;
@@ -140,15 +152,23 @@ export default function ChatsPage() {
   const [olderMessagesCursor, setOlderMessagesCursor] = useState<string | null>(null);
   const [userSettings, setUserSettings] = useState<UserSettings | null>(null);
   const [messageText, setMessageText] = useState("");
+  const [selectedReplyMessage, setSelectedReplyMessage] = useState<Message | null>(
+    null,
+  );
+  const [forwardingMessage, setForwardingMessage] = useState<Message | null>(null);
+  const [forwardQuery, setForwardQuery] = useState("");
+  const [selectedForwardChatIds, setSelectedForwardChatIds] = useState<string[]>([]);
   const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [messageError, setMessageError] = useState<string | null>(null);
+  const [messageNotice, setMessageNotice] = useState<string | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [isSearchingMembers, setIsSearchingMembers] = useState(false);
   const [isLoadingChats, setIsLoadingChats] = useState(true);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [isLoadingOlderMessages, setIsLoadingOlderMessages] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isForwarding, setIsForwarding] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isSendingVoice, setIsSendingVoice] = useState(false);
   const [isRecordingVoice, setIsRecordingVoice] = useState(false);
@@ -194,6 +214,14 @@ export default function ChatsPage() {
 
   useEffect(() => {
     selectedChatIdRef.current = selectedChat?.id ?? null;
+  }, [selectedChat?.id]);
+
+  useEffect(() => {
+    setSelectedReplyMessage(null);
+    setForwardingMessage(null);
+    setForwardQuery("");
+    setSelectedForwardChatIds([]);
+    setMessageNotice(null);
   }, [selectedChat?.id]);
 
   useEffect(() => {
@@ -638,6 +666,14 @@ export default function ChatsPage() {
       updateMessageReceipts(payload, "read");
     }
 
+    function handleMessageReactionUpdated(payload: MessageReactionUpdate) {
+      if (payload.chatId !== selectedChat?.id) {
+        return;
+      }
+
+      applyReactionUpdate(payload, { preserveReactedByMe: true });
+    }
+
     function handleTypingStart(payload: TypingUser) {
       if (payload.chatId !== selectedChat?.id) {
         return;
@@ -669,6 +705,7 @@ export default function ChatsPage() {
     socket?.on("message:updated", handleMessageUpdated);
     socket?.on("message:delivered", handleMessageDelivered);
     socket?.on("message:read", handleMessageRead);
+    socket?.on("message_reaction_updated", handleMessageReactionUpdated);
     socket?.on("userTyping:start", handleTypingStart);
     socket?.on("userTyping:stop", handleTypingStop);
     socket?.on("connect_error", () => {
@@ -683,11 +720,56 @@ export default function ChatsPage() {
       socket?.off("message:updated", handleMessageUpdated);
       socket?.off("message:delivered", handleMessageDelivered);
       socket?.off("message:read", handleMessageRead);
+      socket?.off("message_reaction_updated", handleMessageReactionUpdated);
       socket?.off("userTyping:start", handleTypingStart);
       socket?.off("userTyping:stop", handleTypingStop);
       socket?.off("connect_error");
     };
   }, [currentUser?.id, selectedChat, userSettings?.showReadReceipts]);
+
+  function applyReactionUpdate(
+    payload: MessageReactionUpdate,
+    options: { preserveReactedByMe?: boolean } = {},
+  ) {
+    const preserveReactedByMe = options.preserveReactedByMe ?? false;
+
+    setMessages((currentMessages) =>
+      currentMessages.map((message) => {
+        if (message.id !== payload.messageId) {
+          return message;
+        }
+
+        return {
+          ...message,
+          reactions: mergeReactionGroups(
+            message.reactions ?? [],
+            payload.reactions,
+            preserveReactedByMe,
+          ),
+        };
+      }),
+    );
+
+    setChats((currentChats) =>
+      currentChats.map((chat) => {
+        if (chat.id !== payload.chatId || chat.lastMessage?.id !== payload.messageId) {
+          return chat;
+        }
+
+        return {
+          ...chat,
+          lastMessage: {
+            ...chat.lastMessage,
+            reactions: mergeReactionGroups(
+              chat.lastMessage.reactions ?? [],
+              payload.reactions,
+              preserveReactedByMe,
+            ),
+          },
+        };
+      }),
+    );
+  }
 
   function updateMessageReceipts(
     payload: ReceiptUpdate,
@@ -1028,6 +1110,127 @@ export default function ChatsPage() {
     }
   }
 
+  function handleReplyToMessage(message: Message) {
+    if (message.deletedAt) {
+      return;
+    }
+
+    setSelectedReplyMessage(message);
+    setMessageNotice(null);
+  }
+
+  function handleOpenForward(message: Message) {
+    setForwardingMessage(message);
+    setSelectedForwardChatIds([]);
+    setForwardQuery("");
+    setMessageError(null);
+    setMessageNotice(null);
+  }
+
+  function handleCloseForward() {
+    if (isForwarding) {
+      return;
+    }
+
+    setForwardingMessage(null);
+    setSelectedForwardChatIds([]);
+    setForwardQuery("");
+  }
+
+  function handleToggleForwardChat(chatId: string) {
+    setSelectedForwardChatIds((currentIds) =>
+      currentIds.includes(chatId)
+        ? currentIds.filter((id) => id !== chatId)
+        : [...currentIds, chatId],
+    );
+  }
+
+  async function handleConfirmForward() {
+    if (!forwardingMessage || !selectedForwardChatIds.length) {
+      return;
+    }
+
+    setIsForwarding(true);
+    setMessageError(null);
+    setMessageNotice(null);
+
+    try {
+      await forwardMessage(forwardingMessage.id, selectedForwardChatIds);
+      setForwardingMessage(null);
+      setSelectedForwardChatIds([]);
+      setForwardQuery("");
+      setMessageNotice(ru.chats.forwardedMessage);
+    } catch (error) {
+      setMessageError(
+        error instanceof ApiError ? error.message : ru.chats.errors.forwardMessage,
+      );
+    } finally {
+      setIsForwarding(false);
+    }
+  }
+
+  function handleReplyPreviewClick(preview: MessagePreview) {
+    const element = document.getElementById(`message-${preview.id}`);
+
+    if (!element) {
+      setMessageNotice(ru.chats.originalMessageNotLoaded);
+      return;
+    }
+
+    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    element.classList.add("message-jump-highlight");
+    window.setTimeout(() => {
+      element.classList.remove("message-jump-highlight");
+    }, 1200);
+  }
+
+  async function handleToggleReaction(message: Message, emoji: string) {
+    if (!currentUser || message.deletedAt) {
+      return;
+    }
+
+    const previousReactions = message.reactions ?? [];
+    const optimisticReactions = toggleReactionOptimistically(
+      message.reactions ?? [],
+      emoji,
+      {
+        id: currentUser.id,
+        username: currentUser.username,
+        displayName: currentUser.displayName,
+        nameEmoji: currentUser.nameEmoji,
+        avatarUrl: currentUser.avatarUrl,
+      },
+    );
+
+    setMessageError(null);
+    setMessages((currentMessages) =>
+      currentMessages.map((currentMessage) => {
+        if (currentMessage.id !== message.id) {
+          return currentMessage;
+        }
+        return {
+          ...currentMessage,
+          reactions: optimisticReactions,
+        };
+      }),
+    );
+
+    try {
+      const payload = await toggleMessageReaction(message.id, emoji);
+      applyReactionUpdate(payload);
+    } catch (error) {
+      setMessages((currentMessages) =>
+        currentMessages.map((currentMessage) =>
+          currentMessage.id === message.id
+            ? { ...currentMessage, reactions: previousReactions }
+            : currentMessage,
+        ),
+      );
+
+      setMessageError(formatReactionError(error));
+    }
+  }
+
   function handleMentionAll() {
     setMessageText((currentText) =>
       currentText.trim() ? `${currentText} @all ` : "@all ",
@@ -1054,7 +1257,11 @@ export default function ChatsPage() {
 
     socket.emit(
       "sendMessage",
-      { chatId: selectedChat.id, text },
+      {
+        chatId: selectedChat.id,
+        text,
+        replyToMessageId: selectedReplyMessage?.id,
+      },
       (response: Message | { error?: string }) => {
         setIsSending(false);
 
@@ -1064,6 +1271,7 @@ export default function ChatsPage() {
         }
 
         setMessageText("");
+        setSelectedReplyMessage(null);
       },
     );
   }
@@ -1081,9 +1289,15 @@ export default function ChatsPage() {
     setMessageError(null);
 
     try {
-      await sendMediaMessage(selectedChat.id, file, caption || undefined);
+      await sendMediaMessage(
+        selectedChat.id,
+        file,
+        caption || undefined,
+        selectedReplyMessage?.id,
+      );
       stopTyping(selectedChat.id);
       setMessageText("");
+      setSelectedReplyMessage(null);
     } catch (error) {
       setMessageError(
         error instanceof ApiError
@@ -1211,7 +1425,8 @@ export default function ChatsPage() {
     setMessageError(null);
 
     try {
-      await sendMediaMessage(chatId, voiceFile);
+      await sendMediaMessage(chatId, voiceFile, undefined, selectedReplyMessage?.id);
+      setSelectedReplyMessage(null);
     } catch (error) {
       setMessageError(
         error instanceof ApiError ? error.message : ru.chats.errors.uploadMedia,
@@ -1377,6 +1592,8 @@ export default function ChatsPage() {
     setError(null);
     setIsUserMenuOpen(false);
     setIsMobileDrawerOpen(false);
+    setSelectedReplyMessage(null);
+    setForwardingMessage(null);
 
     try {
       await logout();
@@ -1607,6 +1824,7 @@ export default function ChatsPage() {
         isSendingVoice={isSendingVoice}
         deletingMessageId={deletingMessageId}
         messageError={messageError}
+        messageNotice={messageNotice}
         messageText={messageText}
         messages={messages}
         messagesScrollRef={messagesScrollRef}
@@ -1623,20 +1841,40 @@ export default function ChatsPage() {
         onAddGroupMembers={handleAddGroupMembers}
         onCloseGroupSettings={() => setIsGroupSettingsOpen(false)}
         onDeleteMessage={handleDeleteMessage}
+        onForwardMessage={handleOpenForward}
         onGroupAvatarChange={handleGroupAvatarChange}
         onGroupWallpaperChange={handleGroupWallpaperChange}
         onLoadOlderMessages={handleLoadOlderMessages}
         onMentionAll={handleMentionAll}
         onOpenProfile={handleOpenProfile}
         onOpenGroupSettings={() => setIsGroupSettingsOpen(true)}
+        onReplyPreviewClick={handleReplyPreviewClick}
+        onReplyToMessage={handleReplyToMessage}
         onSaveGroupTitle={handleSaveGroupTitle}
+        onToggleReaction={handleToggleReaction}
         onUpdateGroupRole={handleUpdateGroupRole}
         onMessageTextChange={handleMessageTextChange}
         onSendMessage={handleSendMessage}
         selectedChat={selectedChat}
+        selectedReplyMessage={selectedReplyMessage}
+        onCancelReply={() => setSelectedReplyMessage(null)}
         typingUsers={typingUsers}
       />
       <AnimatePresence>
+        {forwardingMessage ? (
+          <ForwardMessageModal
+            chats={chats}
+            currentChatId={selectedChat?.id ?? null}
+            isForwarding={isForwarding}
+            message={forwardingMessage}
+            onClose={handleCloseForward}
+            onConfirm={handleConfirmForward}
+            onQueryChange={setForwardQuery}
+            onToggleChat={handleToggleForwardChat}
+            query={forwardQuery}
+            selectedChatIds={selectedForwardChatIds}
+          />
+        ) : null}
         {sharedChatKind ? (
           <SharedChatModal
             error={error}
@@ -1838,6 +2076,165 @@ function CreateChatMenuButton({
       </span>
       {children}
     </button>
+  );
+}
+
+function ForwardMessageModal({
+  chats,
+  currentChatId,
+  isForwarding,
+  message,
+  onClose,
+  onConfirm,
+  onQueryChange,
+  onToggleChat,
+  query,
+  selectedChatIds,
+}: {
+  chats: Chat[];
+  currentChatId: string | null;
+  isForwarding: boolean;
+  message: Message;
+  onClose: () => void;
+  onConfirm: () => void;
+  onQueryChange: (value: string) => void;
+  onToggleChat: (chatId: string) => void;
+  query: string;
+  selectedChatIds: string[];
+}) {
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleChats = chats.filter((chat) =>
+    getChatTitle(chat).toLowerCase().includes(normalizedQuery),
+  );
+
+  return (
+    <motion.div
+      animate={{ opacity: 1 }}
+      aria-modal="true"
+      className="fixed inset-0 z-[70] flex items-end bg-black/38 px-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] pt-10 backdrop-blur-sm md:items-center md:justify-center md:p-6"
+      exit={{ opacity: 0 }}
+      initial={{ opacity: 0 }}
+      role="dialog"
+    >
+      <motion.div
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        className="ios-glass flex max-h-[88dvh] w-full flex-col overflow-hidden rounded-[28px] md:max-w-lg"
+        exit={{ opacity: 0, scale: 0.98, y: 16 }}
+        initial={{ opacity: 0, scale: 0.98, y: 16 }}
+        transition={{ duration: 0.18, ease: "easeOut" }}
+      >
+        <header className="flex items-center gap-3 border-b border-[var(--border-soft)] px-4 py-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--input-bg)] text-[var(--accent)]">
+            <Forward size={20} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-[16px] font-semibold text-[var(--text-main)]">
+              {ru.chats.forwardTo}
+            </h2>
+            <p className="truncate text-sm text-[var(--text-muted)]">
+              {formatMessagePreview(message)}
+            </p>
+          </div>
+          <button
+            aria-label={ru.app.close}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)] hover:text-[var(--text-main)]"
+            disabled={isForwarding}
+            onClick={onClose}
+            type="button"
+          >
+            <X size={20} />
+          </button>
+        </header>
+
+        <div className="border-b border-[var(--border-soft)] p-4">
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-soft)]"
+              size={18}
+            />
+            <input
+              className="ios-input h-11 w-full pl-10 pr-4 text-[15px] placeholder:text-[var(--text-soft)]"
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder={ru.chats.chooseChat}
+              value={query}
+            />
+          </div>
+        </div>
+
+        <div className="ios-scroll min-h-0 flex-1 overflow-y-auto p-2">
+          {visibleChats.map((chat) => {
+            const canPost = canPostInChat(chat);
+            const isSelected = selectedChatIds.includes(chat.id);
+            const disabledReason = canPost ? null : ru.chats.errors.noPermissionToPostHere;
+
+            return (
+              <button
+                className={`flex w-full items-center gap-3 rounded-[18px] px-3 py-2.5 text-left transition ${
+                  isSelected ? "bg-[var(--active-soft)]" : "hover:bg-[var(--hover-soft)]"
+                } disabled:cursor-not-allowed disabled:opacity-55`}
+                disabled={!canPost || isForwarding}
+                key={chat.id}
+                onClick={() => onToggleChat(chat.id)}
+                title={disabledReason ?? getChatTitle(chat)}
+                type="button"
+              >
+                <Avatar
+                  avatarUrl={
+                    chat.type === "private"
+                      ? chat.partner?.avatarUrl ?? null
+                      : chat.avatarUrl
+                  }
+                  label={getChatTitle(chat)}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-[15px] font-semibold text-[var(--text-main)]">
+                      {getChatTitle(chat)}
+                    </span>
+                    {chat.id === currentChatId ? (
+                      <span className="shrink-0 rounded-full bg-[var(--input-bg)] px-2 py-0.5 text-[11px] text-[var(--text-muted)]">
+                        {ru.chats.message}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="block truncate text-sm text-[var(--text-muted)]">
+                    {disabledReason ?? getChatSubtitle(chat)}
+                  </span>
+                </span>
+                <span
+                  className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${
+                    isSelected
+                      ? "border-[var(--accent)] bg-[var(--accent)] text-white"
+                      : "border-[var(--border-soft)]"
+                  }`}
+                >
+                  {isSelected ? <Check size={15} /> : null}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <footer className="flex items-center gap-2 border-t border-[var(--border-soft)] p-4">
+          <button
+            className="ios-button h-11 flex-1 rounded-[16px] border border-[var(--border-soft)] bg-[var(--input-bg)] px-4 text-sm font-semibold text-[var(--text-main)] transition hover:bg-[var(--hover-soft)]"
+            disabled={isForwarding}
+            onClick={onClose}
+            type="button"
+          >
+            {ru.app.cancel}
+          </button>
+          <button
+            className="ios-button h-11 flex-1 rounded-[16px] bg-[var(--accent)] px-4 text-sm font-semibold text-white transition hover:bg-[var(--accent-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!selectedChatIds.length || isForwarding}
+            onClick={onConfirm}
+            type="button"
+          >
+            {isForwarding ? ru.chats.sending : ru.chats.forward}
+          </button>
+        </footer>
+      </motion.div>
+    </motion.div>
   );
 }
 
@@ -2364,6 +2761,7 @@ function ChatArea({
   isSendingVoice,
   isUploadingMedia,
   messageError,
+  messageNotice,
   messageText,
   messages,
   messagesScrollRef,
@@ -2372,7 +2770,9 @@ function ChatArea({
   onAddGroupMembers,
   onBackToChats,
   onCloseGroupSettings,
+  onCancelReply,
   onDeleteMessage,
+  onForwardMessage,
   onGroupAvatarChange,
   onGroupWallpaperChange,
   onLoadOlderMessages,
@@ -2380,15 +2780,19 @@ function ChatArea({
   onMediaChange,
   onOpenProfile,
   onOpenGroupSettings,
+  onReplyPreviewClick,
+  onReplyToMessage,
   onMessageTextChange,
   onSaveGroupTitle,
   onSendMessage,
+  onToggleReaction,
   onUpdateGroupRole,
   onVoiceClick,
   onVoicePointerCancel,
   onVoicePointerDown,
   onVoicePointerUp,
   selectedChat,
+  selectedReplyMessage,
   typingUsers,
 }: {
   currentUserId: string | null;
@@ -2404,6 +2808,7 @@ function ChatArea({
   isSendingVoice: boolean;
   isUploadingMedia: boolean;
   messageError: string | null;
+  messageNotice: string | null;
   messageText: string;
   messages: Message[];
   messagesScrollRef: React.RefObject<HTMLDivElement | null>;
@@ -2411,8 +2816,10 @@ function ChatArea({
   recordingDuration: number;
   onAddGroupMembers: (memberIds: string[]) => void;
   onBackToChats: () => void;
+  onCancelReply: () => void;
   onCloseGroupSettings: () => void;
   onDeleteMessage: (message: Message) => void;
+  onForwardMessage: (message: Message) => void;
   onGroupAvatarChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onGroupWallpaperChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onLoadOlderMessages: () => void;
@@ -2420,9 +2827,12 @@ function ChatArea({
   onMediaChange: (event: ChangeEvent<HTMLInputElement>) => void;
   onOpenProfile: (username: string) => void;
   onOpenGroupSettings: () => void;
+  onReplyPreviewClick: (preview: MessagePreview) => void;
+  onReplyToMessage: (message: Message) => void;
   onMessageTextChange: (value: string) => void;
   onSaveGroupTitle: (title: string) => void;
   onSendMessage: (event: FormEvent<HTMLFormElement>) => void;
+  onToggleReaction: (message: Message, emoji: string) => void;
   onUpdateGroupRole: (
     userId: string,
     role: "admin" | "member" | "subscriber",
@@ -2432,6 +2842,7 @@ function ChatArea({
   onVoicePointerDown: (event: React.PointerEvent<HTMLButtonElement>) => void;
   onVoicePointerUp: () => void;
   selectedChat: Chat | null;
+  selectedReplyMessage: Message | null;
   typingUsers: TypingUser[];
 }) {
   const typingText = getTypingText(typingUsers);
@@ -2548,6 +2959,7 @@ function ChatArea({
                     return (
                       <motion.div
                         animate={{ opacity: 1, y: 0, scale: 1 }}
+                        id={`message-${message.id}`}
                         initial={{ opacity: 0, y: 8, scale: 0.99 }}
                         key={message.id}
                         layout
@@ -2563,9 +2975,14 @@ function ChatArea({
                           chatType={selectedChat.type}
                           deletingMessageId={deletingMessageId}
                           isOwn={message.senderId === currentUserId}
+                          isMobile={isMobile}
                           message={message}
                           onDelete={onDeleteMessage}
+                          onForward={onForwardMessage}
                           onOpenProfile={onOpenProfile}
+                          onReply={onReplyToMessage}
+                          onReplyPreviewClick={onReplyPreviewClick}
+                          onToggleReaction={onToggleReaction}
                         />
                       </motion.div>
                     );
@@ -2598,8 +3015,19 @@ function ChatArea({
               {messageError ? (
                 <p className="mb-2 text-sm text-[var(--danger)]">{messageError}</p>
               ) : null}
+              {messageNotice ? (
+                <p className="mb-2 text-sm text-[var(--text-muted)]">
+                  {messageNotice}
+                </p>
+              ) : null}
               {isUploadingMedia || isSendingVoice ? (
                 <p className="mb-2 text-sm text-[var(--text-muted)]">{ru.chats.uploading}</p>
+              ) : null}
+              {selectedReplyMessage ? (
+                <ComposerReplyPreview
+                  message={selectedReplyMessage}
+                  onCancel={onCancelReply}
+                />
               ) : null}
               <div className="flex min-w-0 items-end gap-2 md:gap-3">
                 <label
@@ -3140,20 +3568,88 @@ function MessageBubble({
   chatType,
   deletingMessageId,
   isOwn,
+  isMobile,
   message,
   onDelete,
+  onForward,
   onOpenProfile,
+  onReply,
+  onReplyPreviewClick,
+  onToggleReaction,
 }: {
   canDelete: boolean;
   chatType: ChatType;
   deletingMessageId: string | null;
   isOwn: boolean;
+  isMobile: boolean;
   message: Message;
   onDelete: (message: Message) => void;
+  onForward: (message: Message) => void;
   onOpenProfile: (username: string) => void;
+  onReply: (message: Message) => void;
+  onReplyPreviewClick: (preview: MessagePreview) => void;
+  onToggleReaction: (message: Message, emoji: string) => void;
 }) {
   const showSender = !isOwn && chatType !== "private";
   const isDeleted = Boolean(message.deletedAt);
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isReactionPickerOpen, setIsReactionPickerOpen] = useState(false);
+  const pointerStartRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  const longPressTimeoutRef = useRef<number | null>(null);
+
+  function clearLongPress() {
+    if (longPressTimeoutRef.current) {
+      window.clearTimeout(longPressTimeoutRef.current);
+      longPressTimeoutRef.current = null;
+    }
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    pointerStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      at: Date.now(),
+    };
+    clearLongPress();
+    longPressTimeoutRef.current = window.setTimeout(() => {
+      if (!isDeleted) {
+        setIsReactionPickerOpen(true);
+      }
+    }, 520);
+  }
+
+  function handlePointerUp(event: React.PointerEvent<HTMLDivElement>) {
+    clearLongPress();
+    const start = pointerStartRef.current;
+    pointerStartRef.current = null;
+
+    if (!start || isDeleted) {
+      return;
+    }
+
+    const deltaX = event.clientX - start.x;
+    const deltaY = Math.abs(event.clientY - start.y);
+
+    if (Math.abs(deltaX) > 64 && deltaY < 36) {
+      onReply(message);
+    }
+  }
+
+  function handleQuickReaction(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    if (!isDeleted) {
+      onToggleReaction(message, QUICK_MESSAGE_REACTION);
+    }
+  }
+
+  function handleContextMenu(event: React.MouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    if (!isDeleted) {
+      setIsReactionPickerOpen(true);
+    }
+  }
 
   return (
     <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
@@ -3177,50 +3673,462 @@ function MessageBubble({
         </button>
       ) : null}
       <div
-        className={`max-w-[86%] px-3.5 py-2 text-[15px] leading-5 shadow-sm md:max-w-[68%] ${
-          isOwn
-            ? "rounded-[20px] rounded-br-[6px] bg-[var(--bubble-out)] text-[var(--bubble-out-text)]"
-            : "rounded-[20px] rounded-bl-[6px] border border-[var(--border-soft)] bg-[var(--bubble-in)] text-[var(--text-main)]"
+        className={`flex max-w-[86%] flex-col md:max-w-[68%] ${
+          isOwn ? "items-end" : "items-start"
         }`}
       >
-        {showSender ? (
-          <button
-            className="mb-1 block max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
-            onClick={() => onOpenProfile(message.sender.username)}
-            type="button"
-          >
-            {getUserDisplayName(message.sender)}
-          </button>
+        <div className="group relative flex max-w-full items-end gap-1">
+        {!isOwn ? (
+          <MessageActionButton
+            isOpen={isMenuOpen}
+            setIsOpen={setIsMenuOpen}
+          />
         ) : null}
-        {isDeleted ? (
-          <p className="italic opacity-75">{ru.chats.messageDeleted}</p>
-        ) : (
-          <MessageMedia message={message} />
-        )}
-        {!isDeleted && message.text ? (
-          <p className="whitespace-pre-wrap break-words">{message.text}</p>
-        ) : null}
-        <p
-          className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${
-            isOwn ? "text-white/75" : "text-[var(--text-muted)]"
+        <div
+          onPointerCancel={clearLongPress}
+          onPointerDown={handlePointerDown}
+          onPointerLeave={clearLongPress}
+          onPointerUp={handlePointerUp}
+          onContextMenu={handleContextMenu}
+          onDoubleClick={handleQuickReaction}
+          className={`max-w-full px-3.5 py-2 text-[15px] leading-5 shadow-sm ${
+            isOwn
+              ? "rounded-[20px] rounded-br-[6px] bg-[var(--bubble-out)] text-[var(--bubble-out-text)]"
+              : "rounded-[20px] rounded-bl-[6px] border border-[var(--border-soft)] bg-[var(--bubble-in)] text-[var(--text-main)]"
           }`}
         >
-          <span>{formatMessageTime(message.createdAt)}</span>
-          {isOwn ? <MessageStatus status={getMessageStatus(message)} /> : null}
-          {canDelete && !isDeleted ? (
+          {message.forwardedFrom ? (
+            <ForwardedLabel message={message} isOwn={isOwn} />
+          ) : null}
+          {showSender ? (
             <button
-              aria-label={ru.chats.deleteMessage}
-              className="ml-1 inline-flex h-5 w-5 items-center justify-center rounded text-current opacity-75 transition hover:bg-black/10 hover:opacity-100 disabled:cursor-wait disabled:opacity-40"
-              disabled={deletingMessageId === message.id}
-              onClick={() => onDelete(message)}
-              title={ru.chats.deleteMessage}
+              className="mb-1 block max-w-full truncate text-left text-xs font-semibold text-[var(--accent)]"
+              onClick={() => onOpenProfile(message.sender.username)}
               type="button"
             >
-              <Trash2 size={13} />
+              {getUserDisplayName(message.sender)}
             </button>
           ) : null}
+          {message.replyTo ? (
+            <ReplyPreviewCard
+              isOwn={isOwn}
+              onClick={() => onReplyPreviewClick(message.replyTo!)}
+              preview={message.replyTo}
+            />
+          ) : null}
+          {isDeleted ? (
+            <p className="italic opacity-75">{ru.chats.messageDeleted}</p>
+          ) : (
+            <MessageMedia message={message} />
+          )}
+          {!isDeleted && message.text ? (
+            <p className="whitespace-pre-wrap break-words">{message.text}</p>
+          ) : null}
+          <p
+            className={`mt-1 flex items-center justify-end gap-1 text-[11px] ${
+            isOwn ? "text-white/75" : "text-[var(--text-muted)]"
+          }`}
+          >
+            <span>{formatMessageTime(message.createdAt)}</span>
+            {isOwn ? <MessageStatus status={getMessageStatus(message)} /> : null}
+          </p>
+          <MessageMenu
+            canDelete={canDelete}
+            deletingMessageId={deletingMessageId}
+            isDeleted={isDeleted}
+            isOpen={isMenuOpen}
+            message={message}
+            onDelete={onDelete}
+            onForward={onForward}
+            onReact={() => setIsReactionPickerOpen(true)}
+            onReply={onReply}
+            setIsOpen={setIsMenuOpen}
+          />
+          <ReactionPicker
+            isMobile={isMobile}
+            isOpen={isReactionPickerOpen}
+            isOwn={isOwn}
+            message={message}
+            onClose={() => setIsReactionPickerOpen(false)}
+            onToggleReaction={onToggleReaction}
+          />
+        </div>
+        {isOwn ? (
+          <MessageActionButton
+            isOpen={isMenuOpen}
+            setIsOpen={setIsMenuOpen}
+          />
+        ) : null}
+        </div>
+        <MessageReactionChips
+          message={message}
+          onToggleReaction={onToggleReaction}
+        />
+      </div>
+    </div>
+  );
+}
+
+function MessageActionButton({
+  isOpen,
+  setIsOpen,
+}: {
+  isOpen: boolean;
+  setIsOpen: (isOpen: boolean) => void;
+}) {
+  return (
+    <button
+      aria-label={ru.chats.messageActions}
+      className={`ios-button mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--panel-floating)] text-[var(--text-muted)] shadow-sm backdrop-blur transition md:opacity-0 md:group-hover:opacity-100 ${
+        isOpen ? "opacity-100" : ""
+      }`}
+      onClick={() => setIsOpen(!isOpen)}
+      title={ru.chats.messageActions}
+      type="button"
+    >
+      <MoreHorizontal size={17} />
+    </button>
+  );
+}
+
+function MessageMenu({
+  canDelete,
+  deletingMessageId,
+  isDeleted,
+  isOpen,
+  message,
+  onDelete,
+  onForward,
+  onReact,
+  onReply,
+  setIsOpen,
+}: {
+  canDelete: boolean;
+  deletingMessageId: string | null;
+  isDeleted: boolean;
+  isOpen: boolean;
+  message: Message;
+  onDelete: (message: Message) => void;
+  onForward: (message: Message) => void;
+  onReact: () => void;
+  onReply: (message: Message) => void;
+  setIsOpen: (isOpen: boolean) => void;
+}) {
+  if (!isOpen) {
+    return null;
+  }
+
+  return (
+    <div className="absolute bottom-full right-0 z-20 mb-2 min-w-40 overflow-hidden rounded-[18px] border border-[var(--border-soft)] bg-[var(--panel-floating)]/95 p-1 text-[var(--text-main)] shadow-xl backdrop-blur-xl">
+      <button
+        className="flex h-10 w-full items-center gap-2 rounded-[14px] px-3 text-left text-sm font-medium transition hover:bg-[var(--hover-soft)] disabled:opacity-45"
+        disabled={isDeleted}
+        onClick={() => {
+          setIsOpen(false);
+          onReact();
+        }}
+        type="button"
+      >
+        <span className="text-base leading-none">{QUICK_MESSAGE_REACTION}</span>
+        {ru.chats.react}
+      </button>
+      <button
+        className="flex h-10 w-full items-center gap-2 rounded-[14px] px-3 text-left text-sm font-medium transition hover:bg-[var(--hover-soft)] disabled:opacity-45"
+        disabled={isDeleted}
+        onClick={() => {
+          setIsOpen(false);
+          onReply(message);
+        }}
+        type="button"
+      >
+        <Reply size={16} />
+        {ru.chats.reply}
+      </button>
+      <button
+        className="flex h-10 w-full items-center gap-2 rounded-[14px] px-3 text-left text-sm font-medium transition hover:bg-[var(--hover-soft)] disabled:opacity-45"
+        disabled={isDeleted}
+        onClick={() => {
+          setIsOpen(false);
+          onForward(message);
+        }}
+        type="button"
+      >
+        <Forward size={16} />
+        {ru.chats.forward}
+      </button>
+      {canDelete ? (
+        <button
+          className="flex h-10 w-full items-center gap-2 rounded-[14px] px-3 text-left text-sm font-medium text-[var(--danger)] transition hover:bg-red-500/10 disabled:cursor-wait disabled:opacity-45"
+          disabled={isDeleted || deletingMessageId === message.id}
+          onClick={() => {
+            setIsOpen(false);
+            onDelete(message);
+          }}
+          type="button"
+        >
+          <Trash2 size={16} />
+          {ru.chats.deleteMessage}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ReactionPicker({
+  isMobile,
+  isOpen,
+  isOwn,
+  message,
+  onClose,
+  onToggleReaction,
+}: {
+  isMobile: boolean;
+  isOpen: boolean;
+  isOwn: boolean;
+  message: Message;
+  onClose: () => void;
+  onToggleReaction: (message: Message, emoji: string) => void;
+}) {
+  const reactedEmoji = new Set(
+    (message.reactions ?? [])
+      .filter((reaction) => reaction.reactedByMe)
+      .map((reaction) => reaction.emoji),
+  );
+
+  return (
+    <AnimatePresence>
+      {isOpen ? (
+        isMobile ? (
+          <>
+            <motion.button
+              aria-label={ru.app.close}
+              animate={{ opacity: 1 }}
+              className="fixed inset-0 z-[80] bg-black/25 backdrop-blur-[1px]"
+              exit={{ opacity: 0 }}
+              initial={{ opacity: 0 }}
+              onClick={onClose}
+              type="button"
+            />
+            <motion.div
+              animate={{ opacity: 1, y: 0 }}
+              className="ios-glass fixed inset-x-3 bottom-[calc(0.85rem+env(safe-area-inset-bottom))] z-[81] rounded-[24px] p-3"
+              exit={{ opacity: 0, y: 18 }}
+              initial={{ opacity: 0, y: 18 }}
+              transition={{ duration: 0.16, ease: "easeOut" }}
+            >
+              <ReactionPickerContent
+                reactedEmoji={reactedEmoji}
+                message={message}
+                onClose={onClose}
+                onToggleReaction={onToggleReaction}
+              />
+            </motion.div>
+          </>
+        ) : (
+          <motion.div
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            className={`ios-glass absolute bottom-full z-30 mb-2 rounded-[22px] p-2 ${
+              isOwn ? "right-0" : "left-0"
+            }`}
+            exit={{ opacity: 0, y: 6, scale: 0.98 }}
+            initial={{ opacity: 0, y: 6, scale: 0.98 }}
+            transition={{ duration: 0.14, ease: "easeOut" }}
+          >
+            <ReactionPickerContent
+              reactedEmoji={reactedEmoji}
+              message={message}
+              onClose={onClose}
+              onToggleReaction={onToggleReaction}
+            />
+          </motion.div>
+        )
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+function ReactionPickerContent({
+  reactedEmoji,
+  message,
+  onClose,
+  onToggleReaction,
+}: {
+  reactedEmoji: Set<string>;
+  message: Message;
+  onClose: () => void;
+  onToggleReaction: (message: Message, emoji: string) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between px-1">
+        <p className="text-xs font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">
+          {ru.chats.reactions}
+        </p>
+        <button
+          aria-label={ru.app.close}
+          className="ios-button flex h-7 w-7 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)]"
+          onClick={onClose}
+          type="button"
+        >
+          <X size={15} />
+        </button>
+      </div>
+      <div className="grid grid-cols-5 gap-1.5">
+        {SUPPORTED_MESSAGE_REACTIONS.map((emoji) => {
+          const isActive = reactedEmoji.has(emoji);
+
+          return (
+            <button
+              aria-label={isActive ? ru.chats.removeReaction : ru.chats.react}
+              className={`ios-button flex h-11 w-11 items-center justify-center rounded-full text-[23px] transition ${
+                isActive
+                  ? "bg-[var(--accent)]/18 shadow-[inset_0_0_0_1px_var(--accent)]"
+                  : "bg-[var(--input-bg)] hover:bg-[var(--hover-soft)]"
+              }`}
+              key={emoji}
+              onClick={() => {
+                onToggleReaction(message, emoji);
+                onClose();
+              }}
+              title={isActive ? ru.chats.removeReaction : ru.chats.react}
+              type="button"
+            >
+              {emoji}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MessageReactionChips({
+  message,
+  onToggleReaction,
+}: {
+  message: Message;
+  onToggleReaction: (message: Message, emoji: string) => void;
+}) {
+  const reactions = message.reactions ?? [];
+
+  if (!reactions.length || message.deletedAt) {
+    return null;
+  }
+
+  return (
+    <div className="mt-1 flex max-w-full flex-wrap gap-1.5 px-1">
+      {reactions.map((reaction) => (
+        <button
+          className={`ios-button flex h-6 items-center gap-1 rounded-full border px-2 text-xs font-semibold shadow-sm transition ${
+            reaction.reactedByMe
+              ? "border-[var(--accent)]/35 bg-[var(--accent)]/16 text-[var(--accent)]"
+              : "border-[var(--border-soft)] bg-[var(--panel-floating)]/85 text-[var(--text-main)] hover:bg-[var(--hover-soft)]"
+          }`}
+          key={reaction.emoji}
+          onClick={() => onToggleReaction(message, reaction.emoji)}
+          title={formatReactionUsersPreview(reaction)}
+          type="button"
+        >
+          <span className="text-sm leading-none">{reaction.emoji}</span>
+          <span>{reaction.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ForwardedLabel({
+  isOwn,
+  message,
+}: {
+  isOwn: boolean;
+  message: Message;
+}) {
+  if (!message.forwardedFrom) {
+    return null;
+  }
+
+  const senderName = getUserDisplayName(message.forwardedFrom.sender);
+  const label = message.forwardedFrom.chatTitle
+    ? `${ru.chats.forwardedMessage} - ${message.forwardedFrom.chatTitle}`
+    : ru.chats.forwardedMessage;
+
+  return (
+    <div
+      className={`mb-1 flex items-center gap-1.5 text-xs font-semibold ${
+        isOwn ? "text-white/75" : "text-[var(--accent)]"
+      }`}
+    >
+      <Forward size={13} />
+      <span className="min-w-0 truncate">
+        {label} · {senderName}
+      </span>
+    </div>
+  );
+}
+
+function ReplyPreviewCard({
+  isOwn,
+  onClick,
+  preview,
+}: {
+  isOwn: boolean;
+  onClick: () => void;
+  preview: MessagePreview;
+}) {
+  return (
+    <button
+      className={`mb-2 flex w-full min-w-0 items-center gap-2 rounded-[14px] border-l-2 px-2.5 py-2 text-left transition ${
+        isOwn
+          ? "border-white/70 bg-white/14 hover:bg-white/20"
+          : "border-[var(--accent)] bg-[var(--hover-soft)] hover:bg-[var(--active-soft)]"
+      }`}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="min-w-0 flex-1">
+        <span
+          className={`block truncate text-xs font-semibold ${
+            isOwn ? "text-white" : "text-[var(--accent)]"
+          }`}
+        >
+          {getUserDisplayName(preview.sender)}
+        </span>
+        <span className="block truncate text-xs opacity-80">
+          {formatMessagePreview(preview)}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function ComposerReplyPreview({
+  message,
+  onCancel,
+}: {
+  message: Message;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mb-2 flex items-center gap-2 rounded-[18px] border border-[var(--border-soft)] bg-[var(--input-bg)]/75 px-3 py-2 shadow-sm backdrop-blur-xl">
+      <div className="h-9 w-1 shrink-0 rounded-full bg-[var(--accent)]" />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-xs font-semibold text-[var(--accent)]">
+          {ru.chats.replyingTo} {getUserDisplayName(message.sender)}
+        </p>
+        <p className="truncate text-sm text-[var(--text-muted)]">
+          {formatMessagePreview(message)}
         </p>
       </div>
+      <button
+        aria-label={ru.chats.cancelReply}
+        className="ios-button flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-[var(--text-muted)] transition hover:bg-[var(--hover-soft)]"
+        onClick={onCancel}
+        title={ru.chats.cancelReply}
+        type="button"
+      >
+        <X size={17} />
+      </button>
     </div>
   );
 }
@@ -3447,6 +4355,151 @@ function canPostInChat(chat: Chat | null) {
   }
 
   return true;
+}
+
+function formatMessagePreview(message: {
+  text: string | null;
+  mediaType: string | null;
+  deletedAt?: string | null;
+}) {
+  if (message.deletedAt) {
+    return ru.chats.messageDeleted;
+  }
+
+  const text = message.text?.trim();
+
+  if (text) {
+    return text.length > 90 ? `${text.slice(0, 87)}...` : text;
+  }
+
+  if (message.mediaType === "image") {
+    return ru.chats.photo;
+  }
+
+  if (message.mediaType === "video") {
+    return ru.chats.video;
+  }
+
+  if (message.mediaType === "audio") {
+    return ru.chats.audio;
+  }
+
+  if (message.mediaType === "document") {
+    return ru.chats.document;
+  }
+
+  return ru.chats.message;
+}
+
+function mergeReactionGroups(
+  currentReactions: MessageReactionGroup[],
+  nextReactions: MessageReactionGroup[],
+  preserveReactedByMe: boolean,
+) {
+  if (!preserveReactedByMe) {
+    return nextReactions;
+  }
+
+  const currentReactedByMe = new Map(
+    currentReactions.map((reaction) => [reaction.emoji, reaction.reactedByMe]),
+  );
+
+  return nextReactions.map((reaction) => ({
+    ...reaction,
+    reactedByMe: currentReactedByMe.get(reaction.emoji) ?? false,
+  }));
+}
+
+function toggleReactionOptimistically(
+  reactions: MessageReactionGroup[],
+  emoji: string,
+  currentUser: {
+    id: string;
+    username: string;
+    displayName: string | null;
+    nameEmoji: string | null;
+    avatarUrl: string | null;
+  },
+) {
+  const nextReactions = reactions.map((reaction) => ({ ...reaction }));
+  const reactionIndex = nextReactions.findIndex(
+    (reaction) => reaction.emoji === emoji,
+  );
+
+  if (reactionIndex >= 0) {
+    const reaction = nextReactions[reactionIndex];
+
+    if (reaction.reactedByMe) {
+      const nextCount = reaction.count - 1;
+
+      if (nextCount <= 0) {
+        return nextReactions.filter((item) => item.emoji !== emoji);
+      }
+
+      nextReactions[reactionIndex] = {
+        ...reaction,
+        count: nextCount,
+        reactedByMe: false,
+        usersPreview: reaction.usersPreview.filter(
+          (user) => user.id !== currentUser.id,
+        ),
+      };
+
+      return nextReactions;
+    }
+
+    nextReactions[reactionIndex] = {
+      ...reaction,
+      count: reaction.count + 1,
+      reactedByMe: true,
+      usersPreview:
+        reaction.usersPreview.length >= 3 ||
+        reaction.usersPreview.some((user) => user.id === currentUser.id)
+          ? reaction.usersPreview
+          : [...reaction.usersPreview, currentUser],
+    };
+
+    return nextReactions;
+  }
+
+  const nextReaction = {
+    emoji,
+    count: 1,
+    reactedByMe: true,
+    usersPreview: [currentUser],
+  };
+
+  return [...nextReactions, nextReaction].sort(
+    (left, right) =>
+      getReactionOrder(left.emoji) - getReactionOrder(right.emoji),
+  );
+}
+
+function getReactionOrder(emoji: string) {
+  const index = SUPPORTED_MESSAGE_REACTIONS.findIndex((item) => item === emoji);
+  return index >= 0 ? index : SUPPORTED_MESSAGE_REACTIONS.length;
+}
+
+function formatReactionUsersPreview(reaction: MessageReactionGroup) {
+  if (!reaction.usersPreview.length) {
+    return ru.chats.noReactionsYet;
+  }
+
+  return reaction.usersPreview.map(getUserDisplayName).join(", ");
+}
+
+function formatReactionError(error: unknown) {
+  if (error instanceof ApiError) {
+    const message = error.message.toLowerCase();
+
+    if (message.includes("unsupported reaction")) {
+      return ru.chats.errors.unsupportedReaction;
+    }
+
+    return error.message;
+  }
+
+  return ru.chats.errors.reactionFailed;
 }
 
 function canManageSelectedChat(chat: Chat | null) {

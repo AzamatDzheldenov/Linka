@@ -116,7 +116,8 @@ export class MessagesGateway
   @SubscribeMessage("sendMessage")
   async sendMessage(
     @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() payload: { chatId?: string; text?: string },
+    @MessageBody()
+    payload: { chatId?: string; text?: string; replyToMessageId?: string },
   ) {
     const userId = this.requireUserId(client);
     const chatId = this.requireChatId(payload.chatId);
@@ -129,6 +130,7 @@ export class MessagesGateway
     const message = await this.messagesService.createMessage(userId, {
       chatId,
       text,
+      replyToMessageId: payload.replyToMessageId,
     });
 
     this.messagesEventsService.emitNewMessage(chatId, message);

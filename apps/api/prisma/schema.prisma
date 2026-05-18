@@ -22,6 +22,8 @@ model User {
   refreshTokens RefreshToken[]
   chatMemberships ChatMember[]
   sentMessages    Message[]      @relation("MessageSender")
+  forwardedMessages Message[]    @relation("MessageForwardedFromUser")
+  messageReactions MessageReaction[]
   messageReceipts MessageReceipt[]
   settings       UserSettings?
   groupInvites   GroupInvite[]   @relation("GroupInviteInvitee")
@@ -65,7 +67,8 @@ model Chat {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
   members   ChatMember[]
-  messages  Message[]
+  messages  Message[] @relation("ChatMessages")
+  forwardedMessages Message[] @relation("MessageForwardedFromChat")
   invites   GroupInvite[]
 }
 
@@ -91,17 +94,47 @@ model Message {
   text      String?
   mediaUrl  String?
   mediaType String?
+  replyToMessageId String? @db.Uuid
+  forwardedFromMessageId String? @db.Uuid
+  forwardedFromUserId String? @db.Uuid
+  forwardedFromChatId String? @db.Uuid
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
   editedAt  DateTime?
   deletedAt DateTime?
 
-  chat   Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  chat   Chat @relation("ChatMessages", fields: [chatId], references: [id], onDelete: Cascade)
   sender User @relation("MessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  replyToMessage Message? @relation("MessageReplies", fields: [replyToMessageId], references: [id], onDelete: SetNull)
+  replies Message[] @relation("MessageReplies")
+  forwardedFromMessage Message? @relation("MessageForwards", fields: [forwardedFromMessageId], references: [id], onDelete: SetNull)
+  forwards Message[] @relation("MessageForwards")
+  forwardedFromUser User? @relation("MessageForwardedFromUser", fields: [forwardedFromUserId], references: [id], onDelete: SetNull)
+  forwardedFromChat Chat? @relation("MessageForwardedFromChat", fields: [forwardedFromChatId], references: [id], onDelete: SetNull)
   receipts MessageReceipt[]
+  reactions MessageReaction[]
 
   @@index([chatId, createdAt])
   @@index([senderId])
+  @@index([replyToMessageId])
+  @@index([forwardedFromMessageId])
+  @@index([forwardedFromUserId])
+  @@index([forwardedFromChatId])
+}
+
+model MessageReaction {
+  id        String   @id @default(uuid()) @db.Uuid
+  messageId String   @db.Uuid
+  userId    String   @db.Uuid
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId, emoji])
+  @@index([messageId])
+  @@index([userId])
 }
 
 model MessageReceipt {
