@@ -9,6 +9,7 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
+import type { CookieOptions } from "express";
 import { Request, Response } from "express";
 import { AuthService, REFRESH_TOKEN_COOKIE } from "./auth.service";
 import { LoginDto } from "./dto/login.dto";
@@ -106,13 +107,13 @@ export class AuthController {
     });
   }
 
-  private refreshCookieOptions() {
+  private refreshCookieOptions(): CookieOptions {
     const isProduction = process.env.NODE_ENV === "production";
 
     return {
       httpOnly: true,
       secure: isProduction,
-      sameSite: isProduction ? ("none" as const) : ("lax" as const),
+      sameSite: isProduction ? "none" : "lax",
       path: "/auth",
     };
   }
